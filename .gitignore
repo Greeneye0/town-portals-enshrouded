@@ -1,0 +1,14 @@
+# Builds, packages and runtime files
+/bin/
+/bin-dev/
+/build/
+/dist/
+__pycache__/
+*.obj
+*.pdb
+*.exp
+*.lib
+*.dll
+*.exe
+*.spv
+*.log

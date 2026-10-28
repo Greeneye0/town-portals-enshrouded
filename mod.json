@@ -1,0 +1,11 @@
+{
+  "id": "town-portal",
+  "name": "Town Portals",
+  "version": "1.0.0",
+  "dll": "town-portal.dll",
+  "side": "both",
+  "api": 2,
+  "description": "Open a portal home to your Flame Altar from anywhere, see where it leads through it, and travel back. Multiplayer, 15 languages.",
+  "author": "GreeneyeDS",
+  "enabled": true
+}

@@ -1,0 +1,126 @@
+"""Paint the text out of the loading-screen map's banners, so the mod can write them in any language.
+
+assets/map/map-source-en.png -> assets/map/map-source-blank.png. Each label is a parchment scroll
+with dark lettering: near each LABELS box the scroll is the largest light, tan region; its text
+is the dark "holes" inside that region that do not touch its edge (the scroll's own outline does).
+The text is filled from the parchment round it (OpenCV inpainting). The banners stay, empty.
+The title (ENSHROUDED) and the compass letters are kept: a name and a universal sign.
+Also writes src/portal_map_labels.h: where each label goes (the erased text's centre and height,
+the scroll's width) and what it names, for the loading screen to write it in the game's
+language; and a before/after sheet, out/erase-check.jpg. Run: python erase_labels.py
+"""
+import os
+import cv2
+import numpy as np
+from scipy import ndimage
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+MAP = os.path.join(HERE, '..', '..', 'assets', 'map')
+
+HEADER = os.path.join(HERE, '..', '..', 'src', 'portal_map_labels.h')
+ART = 1254
+# What each label names (portal_map_labels.h kinds): ('region', index) a region's name (portal_regions.h
+# order); ('spire', index) that region's Ancient Spire; ('spireAt', loca) a spire named by a place;
+# ('place', loca) a place. Loca ids from src/portal_locations.h.
+NAMES = {
+    "Cinder's Cradle": ('region', 7), 'Veilwater Basin': ('region', 6), 'Albaneve Summits': ('region', 5),
+    'Blackmire': ('region', 2), 'Revelwood': ('region', 1), 'Nomad Highlands': ('region', 3),
+    'Springlands': ('region', 0), 'Kindlewastes': ('region', 4),
+    'Veilwater Spire': ('spire', 6), 'Blackmire Spire': ('spire', 2), 'Albaneve Spire': ('spire', 5),
+    'Revelwood Spire': ('spire', 1), 'Nomad Spire': ('spire', 3), 'Kindlewastes Spire': ('spire', 4),
+    'Springlands Spire': ('spire', 0), 'Low Meadows Spire': ('spireAt', 0x6202308f),
+    'Pillars of Creation': ('place', 0x7ef58194), 'Umber Hollow': ('place', 0xe5d8d836),
+}
+# Label: (x0, y0, x1, y1) on the 1254 px painting, generous boxes round each scroll.
+LABELS = {
+    "Cinder's Cradle": (690, 150, 950, 215),
+    'Veilwater Basin': (325, 330, 510, 390),
+    'Albaneve Summits': (810, 450, 1040, 510),
+    'Blackmire': (300, 515, 425, 570),
+    'Revelwood': (305, 670, 450, 725),
+    'Nomad Highlands': (765, 690, 970, 755),
+    'Springlands': (305, 895, 450, 950),
+    'Kindlewastes': (840, 965, 1040, 1025),
+    'Veilwater Spire': (520, 450, 622, 484),
+    'Blackmire Spire': (440, 594, 555, 628),
+    'Albaneve Spire': (908, 581, 1010, 615),
+    'Pillars of Creation': (570, 749, 715, 785),
+    'Revelwood Spire': (450, 784, 555, 818),
+    'Nomad Spire': (848, 825, 938, 859),
+    'Umber Hollow': (738, 890, 848, 924),
+    'Kindlewastes Spire': (1022, 932, 1160, 966),
+    'Springlands Spire': (425, 1010, 540, 1044),
+    'Low Meadows Spire': (578, 1067, 718, 1101),
+}
+
+
+def text_mask(crop):
+    hsv = cv2.cvtColor(crop, cv2.COLOR_RGB2HSV)
+    h, s, v = hsv[..., 0].astype(int), hsv[..., 1].astype(int), hsv[..., 2].astype(int)
+    parchment = (v > 150) & (s < 140) & (h >= 8) & (h <= 32)  # OpenCV hue 0..180: tan ~10..30
+    labels, count = ndimage.label(parchment)
+    if not count:
+        return None, None
+    sizes = ndimage.sum(parchment, labels, range(1, count + 1))
+    scroll = labels == (1 + int(np.argmax(sizes)))
+    inside = ndimage.binary_fill_holes(scroll)
+    holes = inside & ~scroll
+    # Keep holes away from the scroll's edge: those are letters, not its rolled ends or outline.
+    core = ndimage.binary_erosion(inside, iterations=3)
+    letters, n = ndimage.label(holes)
+    mask = np.zeros_like(holes)
+    for i in range(1, n + 1):
+        part = letters == i
+        if (part & core).sum() >= part.sum() * 0.6:
+            mask |= part
+    mask = ndimage.binary_dilation(mask, iterations=2) & inside
+    return mask, inside
+
+
+def main():
+    src = cv2.cvtColor(cv2.imread(os.path.join(MAP, 'map-source-en.png')), cv2.COLOR_BGR2RGB)
+    out = src.copy()
+    full = np.zeros(src.shape[:2], np.uint8)
+    rows = []
+    for name, (x0, y0, x1, y1) in LABELS.items():
+        mask, inside = text_mask(src[y0:y1, x0:x1])
+        if mask is None or not mask.any():
+            raise SystemExit(f'{name}: no scroll found')
+        full[y0:y1, x0:x1] |= mask.astype(np.uint8)
+        ty, tx = np.nonzero(mask)
+        sy, sx = np.nonzero(ndimage.binary_erosion(inside, iterations=4))
+        kind, value = NAMES[name]
+        # Centre and height of the old text; room: the scroll's straight middle (its curled ends are not).
+        cu, cv = (x0 + (tx.min() + tx.max()) / 2) / ART, (y0 + (ty.min() + ty.max()) / 2) / ART
+        rows.append((name, kind, value, cu, cv, (ty.max() - ty.min()) / ART, (sx.max() - sx.min()) * 0.86 / ART))
+        print(f'{name}: {mask.sum()} text pixels')
+    lines = ['#pragma once',
+             "// Generated by tools/map/erase_labels.py; do not edit. The loading-screen map's labels,",
+             "// written in the game's language on the painted scrolls (their English text painted out).",
+             '// u, v: centre (0..1 of the map); height: of the old capitals and descenders; room: width available.',
+             '#include <cstdint>', '', 'namespace portal::maplabels {',
+             'enum Kind : uint8_t { region, spire, spireAt, place };',
+             'struct Label { Kind kind; uint32_t value; float u, v, height, room; const char* english; };',
+             f'constexpr Label kLabels[{len(rows)}] = {{']
+    for name, kind, value, cu, cv, h, room in rows:
+        english = name if kind in ('region', 'place') else name.rsplit(' ', 1)[0]
+        lines.append(f'    {{{kind}, 0x{value:x}u, {cu:.5f}f, {cv:.5f}f, {h:.5f}f, {room:.5f}f, "{english}"}},')
+    lines += ['};', '}', '']
+    with open(HEADER, 'w', encoding='utf-8', newline='\n') as f:
+        f.write('\n'.join(lines))
+    out = cv2.inpaint(out, full * 255, 5, cv2.INPAINT_TELEA)
+    cv2.imwrite(os.path.join(MAP, 'map-source-blank.png'), cv2.cvtColor(out, cv2.COLOR_RGB2BGR))
+    # Check sheet: every label before (left) and after (right).
+    rows = []  # reused for the sheet
+    for name, (x0, y0, x1, y1) in LABELS.items():
+        a, b = src[y0:y1, x0:x1], out[y0:y1, x0:x1]
+        pair = np.hstack([a, np.full((a.shape[0], 6, 3), 255, np.uint8), b])
+        scale = 520 / pair.shape[1]
+        rows.append(cv2.resize(pair, (520, max(1, int(pair.shape[0] * scale)))))
+    sheet = np.vstack([np.vstack([r, np.full((4, 520, 3), 40, np.uint8)]) for r in rows])
+    os.makedirs(os.path.join(HERE, 'out'), exist_ok=True)
+    cv2.imwrite(os.path.join(HERE, 'out', 'erase-check.jpg'), cv2.cvtColor(sheet, cv2.COLOR_RGB2BGR))
+
+
+if __name__ == '__main__':
+    main()
