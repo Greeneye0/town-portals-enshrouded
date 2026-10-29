@@ -138,11 +138,13 @@ d.text((x + d.textlength('Thai', font=font(True, 52)) + 24, 24), 'ภาษา�
 d.text((x + 2, 80), "labels written in the game's language, in all 15", font=font(False, 28), fill=TXT)
 save(im, '03b-map-languages.jpg', 2000)
 
-# 04 before the first trip: a landmark of the region in the altar's portal.
-im = load('chat98.png').crop((300, 70, 1800, 860))
-callout(im, 820, 40, 'Before your first trip there', 'a landmark of that region, by day or by night',
-        target=(400, 360), size=44)
-callout(im, 820, 560, 'Closes behind you', 'when you return through it', target=(150, 650), size=40)
+# 04 before the first trip: a landmark of the region in the altar's portal (1.0.1 capture at the
+# altar; the quest markers of the villagers behind the wall are painted out).
+markers = [(228, 331), (468, 313), (868, 385), (675, 497), (1084, 529)]
+im = load('chat129-default-picture.png', erase=[(x - 40, y - 46, x + 40, y + 46) for x, y in markers]).crop((0, 115, 2185, 1300))
+callout(im, 1240, 50, 'Before your first trip there', 'a landmark of that region, by day or by night',
+        target=(860, 380), size=44)
+callout(im, 70, 820, 'Closes behind you', 'when you return through it', target=(655, 640), size=40)
 save(im, '04-default-picture.jpg', 2000)
 
 # 05 home from anywhere: a portal over lava, the prompt in the game's language.
