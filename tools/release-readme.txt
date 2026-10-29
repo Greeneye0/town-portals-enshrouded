@@ -1,4 +1,4 @@
-Town Portals 1.0.0 for Enshrouded
+Town Portals 1.0.1 for Enshrouded
 Saving your ass since 2026.
 
 Open a portal home from anywhere. Press T: after a short cast, a portal opens in front
@@ -41,13 +41,37 @@ WHERE PORTALS CAN'T OPEN
 - In the Shroud or the Hollow Halls, if the host turns that off (AllowInShroud,
   AllowInHollowHalls). Both are allowed by default.
 
-INSTALL (game closed)
-- Copy the contents of client/ into the Enshrouded game folder (where enshrouded.exe is).
-  dbgcore.dll is the Greeneye Loader; skip it if you already have it from another
-  Greeneye mod.
-- Dedicated server: copy the contents of server/ into the server's folder (where
-  enshrouded_server.exe is), and restart the server.
-- Uninstall: delete greeneye\town-portal (and dbgcore.dll if no other Greeneye mod uses it).
+INSTALL
+client/ is for players, server/ is for dedicated servers only.
+- Playing alone, hosting from your game, or joining one: the client files. Everyone in
+  the world needs Town Portals.
+- Dedicated server: every player installs the client files, AND the server gets the
+  server files.
+
+Client (every player)
+1. Close the game.
+2. Open the game folder: in Steam, right-click Enshrouded > Manage > Browse local files
+   (the folder with enshrouded.exe, usually ...\steamapps\common\Enshrouded).
+3. Copy what is INSIDE client/ (dbgcore.dll and the greeneye folder) into it. Don't copy
+   the client folder itself.
+4. If the greeneye folder already exists, let it merge. If dbgcore.dll already exists,
+   skip it: another Greeneye mod already installed the loader.
+   Result: Enshrouded\dbgcore.dll and Enshrouded\greeneye\town-portal\town-portal.dll
+
+Dedicated server (server admin only)
+1. Stop the server.
+2. Open the server's folder (the one with enshrouded_server.exe, usually
+   ...\steamapps\common\EnshroudedServer).
+3. Copy what is INSIDE server/ (dbgcore.dll and the greeneye folder) into it.
+4. Start the server; greeneye\town-portal\town-portal.ini is written there.
+   Result: EnshroudedServer\dbgcore.dll and EnshroudedServer\greeneye\town-portal\town-portal.dll
+   On a rented server, upload the same files next to enshrouded_server.exe with the
+   host's file manager (if it lets you add DLL files).
+
+Check: greeneye\loader.log has a line with "Town Portals 1.0.1" (the server's says
+"server companion loaded").
+Uninstall: delete greeneye\town-portal (and dbgcore.dll if no other Greeneye mod uses
+it), in the game folder and on the server.
 
 SETTINGS: greeneye\town-portal\town-portal.ini (written on first start)
 [Portals] (the host's file: the dedicated server's, or the hosting player's)

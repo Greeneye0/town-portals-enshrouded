@@ -1,7 +1,7 @@
 {
   "id": "town-portal",
   "name": "Town Portals",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "dll": "town-portal.dll",
   "side": "both",
   "api": 2,

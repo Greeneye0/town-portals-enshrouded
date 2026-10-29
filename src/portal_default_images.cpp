@@ -38,8 +38,8 @@ std::shared_ptr<sharing::Image> Decode(int region,bool night) {
     wchar_t name[64]{};std::swprintf(name,64,L"%s-%s.jpg",kRegionFiles[region],night?L"night":L"day");
     wcscat_s(path,L"greeneye\\town-portal\\biomes\\");wcscat_s(path,name);
     std::vector<uint8_t> rgba;uint32_t width{},height{};
-    if(!LoadRgba(path,width,height,rgba)||width!=sharing::kWidth||height!=sharing::kHeight){
-        char line[160]{};std::snprintf(line,sizeof(line),"Town Portal: default picture %ls not loaded (missing or not 2048x1024)",name);
+    if(!LoadRgba(path,width,height,rgba,sharing::kWidth,sharing::kHeight)||width!=sharing::kWidth||height!=sharing::kHeight){
+        char line[160]{};std::snprintf(line,sizeof(line),"Town Portal: default picture %ls not loaded (missing or not an image)",name);
         Log(line);return nullptr;
     }
     uint16_t light[256];for(int v=0;v<256;++v)light[v]=Half(SceneLight(uint8_t(v)));
@@ -67,19 +67,25 @@ void Work() {
     }
 }
 }
-bool LoadRgba(const wchar_t* path,uint32_t& width,uint32_t& height,std::vector<uint8_t>& rgba) {
+bool LoadRgba(const wchar_t* path,uint32_t& width,uint32_t& height,std::vector<uint8_t>& rgba,uint32_t fitWidth,uint32_t fitHeight) {
     // S_OK / S_FALSE: this call initialised COM and must balance it; a thread already in
     // another apartment (RPC_E_CHANGED_MODE) can use WIC as it is.
     const HRESULT com=CoInitializeEx(nullptr,COINIT_MULTITHREADED);
-    IWICImagingFactory* factory{};IWICBitmapDecoder* decoder{};IWICBitmapFrameDecode* frame{};IWICFormatConverter* converter{};
+    IWICImagingFactory* factory{};IWICBitmapDecoder* decoder{};IWICBitmapFrameDecode* frame{};IWICFormatConverter* converter{};IWICBitmapScaler* scaler{};
     UINT w{},h{};
     bool ok=SUCCEEDED(CoCreateInstance(CLSID_WICImagingFactory,nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(&factory)))&&
         SUCCEEDED(factory->CreateDecoderFromFilename(path,nullptr,GENERIC_READ,WICDecodeMetadataCacheOnDemand,&decoder))&&
         SUCCEEDED(decoder->GetFrame(0,&frame))&&SUCCEEDED(frame->GetSize(&w,&h))&&w&&h&&w<=8192&&h<=8192&&
-        SUCCEEDED(factory->CreateFormatConverter(&converter))&&
-        SUCCEEDED(converter->Initialize(frame,GUID_WICPixelFormat32bppRGBA,WICBitmapDitherTypeNone,nullptr,0,WICBitmapPaletteTypeCustom));
+        SUCCEEDED(factory->CreateFormatConverter(&converter));
+    IWICBitmapSource* source=frame;
+    if(ok&&fitWidth&&fitHeight&&(w!=fitWidth||h!=fitHeight)){
+        ok=SUCCEEDED(factory->CreateBitmapScaler(&scaler))&&
+            SUCCEEDED(scaler->Initialize(frame,fitWidth,fitHeight,WICBitmapInterpolationModeHighQualityCubic));
+        source=scaler;w=fitWidth;h=fitHeight;
+    }
+    ok=ok&&SUCCEEDED(converter->Initialize(source,GUID_WICPixelFormat32bppRGBA,WICBitmapDitherTypeNone,nullptr,0,WICBitmapPaletteTypeCustom));
     if(ok){rgba.resize(size_t(w)*h*4);ok=SUCCEEDED(converter->CopyPixels(nullptr,w*4,UINT(rgba.size()),rgba.data()));}
-    if(converter)converter->Release();if(frame)frame->Release();if(decoder)decoder->Release();if(factory)factory->Release();
+    if(converter)converter->Release();if(scaler)scaler->Release();if(frame)frame->Release();if(decoder)decoder->Release();if(factory)factory->Release();
     if(SUCCEEDED(com))CoUninitialize();
     width=w;height=h;
     return ok;

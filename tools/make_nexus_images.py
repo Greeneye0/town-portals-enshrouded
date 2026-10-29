@@ -107,13 +107,14 @@ callout(im, 1060, 560, 'Press E to travel home', 'it names your altar and where 
 wordmark(im)
 save(im, '02-portal-home.jpg', 2000)
 
-# 03 the loading screen: the trip on a painted world map, in the game's language.
-im = load('chat117.png').crop((250, 60, 1900, 1330))
-callout(im, 20, 1000, 'The trip, on a painted world map', 'the path grows as the destination loads',
-        target=(1145, 948), size=42, anchor_side='right')
-callout(im, 1120, 640, 'Your portal', 'mist and motes, in your colour', target=(1275, 905), size=36, anchor_side='bottom')
-callout(im, 20, 30, 'In the game\'s language', 'labels from the game itself (Thai here)', target=(580, 290), size=40)
-callout(im, 20, 760, 'Your Flame Altar', 'its flame flickers', target=(690, 890), size=40)
+# 03 a long trip, half loaded: from a portal in Cinder's Cradle home to the Springlands altar.
+# The shot is small (the map is ~450 px high), so it is cropped with its backdrop and doubled.
+im = load('chat123.png').crop((500, 30, 1500, 556))
+im = im.resize((im.width * 2, im.height * 2), Image.LANCZOS)
+callout(im, 1490, 40, 'Where you opened it', "your portal, in Cinder's Cradle", target=(1092, 140), size=34)
+callout(im, 1490, 400, 'The path grows', 'as the destination loads', target=(1010, 480), size=34)
+callout(im, 20, 680, 'Your Flame Altar', "where you'll arrive", target=(912, 775), size=34)
+callout(im, 1490, 900, 'Loading progress', 'shown as you travel', target=(1092, 1010), size=34)
 save(im, '03-travel-map.jpg', 2000)
 
 # 03b the same part of the map in English (the painting as made) and in Thai (drawn by the mod).

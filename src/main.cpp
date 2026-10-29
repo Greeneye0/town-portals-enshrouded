@@ -16,6 +16,7 @@
 #include "portal_colors.h"
 #include "portal_names.h"
 #include "portal_markers.h"
+#include "portal_prompt_view.h"
 #include "portal_travel.h"
 #include "portal_types.h"
 #include "portal_scene_probe.h"
@@ -792,17 +793,41 @@ SpotCheck CheckBaseSpot(float altarX, float altarY, float altarZ, BaseSpot& spot
     return unknown ? SpotCheck::unknown : SpotCheck::clear;
 }
 
+// How crowded a spot is: rays out from the portal's middle in 8 directions at knee and chest
+// height, each costing 3 when something is within 1.25 m and 1 when within 2.5 m. Chests,
+// workbenches and beds standing there would compete with the portal for E. 0 is open ground;
+// unloaded areas count as open.
+int SpotCrowding(const BaseSpot& spot) {
+    using portal::math::Visibility;
+    auto context = portal::travel::GetVisibilityContext();
+    auto hit = [&](float h, float dx, float dz, float reach) {
+        return portal::travel::TraceVisibility(context, {spot.x, spot.y + h, spot.z},
+                                               {spot.x + dx * reach, spot.y + h, spot.z + dz * reach}) == Visibility::blocked;
+    };
+    int cost = 0;
+    for (int i = 0; i < 8; ++i) {
+        const float a = float(i) * 0.7853982f, dx = std::cos(a), dz = std::sin(a);
+        for (float h : {0.5f, 1.3f})
+            if (hit(h, dx, dz, 1.25f)) cost += 3;
+            else if (hit(h, dx, dz, 2.5f)) cost += 1;
+    }
+    return cost;
+}
+
 // Rings at 4.4, 5.6, 7 and then 3.2 m (further out first: the arrival snapshot's camera stands
 // 2.6 m in front of the portal, and nearer than that to the altar it sees only the altar up
-// close), every 30 degrees, nearest the preferred direction first. A
-// spot proven clear wins; otherwise the first one that is only unconfirmed. False when
-// every spot is blocked or crowded (the caller keeps the preferred spot).
+// close), every 30 degrees, nearest the preferred direction first. Of the spots proven clear,
+// the least crowded wins (the first of equals, so open ground in the preferred direction is
+// kept); otherwise the first one that is only unconfirmed. False when every spot is blocked or
+// crowded by portals (the caller keeps the preferred spot). crowding: the chosen spot's.
 bool ChooseBaseSpot(float altarX, float altarY, float altarZ, float preferX, float preferZ,
-                    float fieldX, float fieldZ, uint64_t ownerAccount, BaseSpot& out, bool needClear) {
+                    float fieldX, float fieldZ, uint64_t ownerAccount, BaseSpot& out, bool needClear,
+                    int* crowding = nullptr) {
     std::vector<portal::PortalInstance> portals;
     portal::travel::GetActivePortals(portals);
-    BaseSpot fallback{};
+    BaseSpot fallback{}, best{};
     bool haveFallback = false;
+    int bestCrowding = -1;
     const float preferAngle = std::atan2(preferZ, preferX);
     for (int step = 0; step < 12; ++step) {
         // 0, +30, -30, +60, -60 ... degrees from the preferred direction.
@@ -830,17 +855,29 @@ bool ChooseBaseSpot(float altarX, float altarY, float altarZ, float preferX, flo
             }
             if (crowded) continue;
             auto check = CheckBaseSpot(altarX, altarY, altarZ, spot);
-            if (check == SpotCheck::clear) { out = spot; return true; }
+            if (check == SpotCheck::clear) {
+                const int cost = SpotCrowding(spot);
+                if (bestCrowding < 0 || cost < bestCrowding) { best = spot; bestCrowding = cost; }
+                if (cost == 0) break;
+            }
             if (check == SpotCheck::unknown && !haveFallback) { fallback = spot; haveFallback = true; }
         }
+        if (bestCrowding == 0) break;
+    }
+    if (bestCrowding >= 0) {
+        out = best;
+        if (crowding) *crowding = bestCrowding;
+        return true;
     }
     if (needClear || !haveFallback) return false;
     out = fallback;
+    if (crowding) *crowding = 0;
     return true;
 }
 
-// Once the owner is near the base, the spot can be judged: keep it if clear, move it if it
-// turned out to be in a wall, a chest or another player's portal, wait while still unknown.
+// Once the owner is near the base, the spot can be judged: keep it if clear and open, move it
+// if it turned out to be in a wall, a chest or another player's portal, or crowded by objects
+// when a more open spot by the altar exists; wait while still unknown.
 uint64_t g_baseChecked = 0;
 
 void CheckOwnBasePortal(void* gameClient, portal::PortalInstance& p) {
@@ -848,12 +885,15 @@ void CheckOwnBasePortal(void* gameClient, portal::PortalInstance& p) {
     auto check = CheckBaseSpot(p.altarX, p.altarY, p.altarZ, spot);
     if (check == SpotCheck::unknown) return;
     g_baseChecked = p.portalId;
-    if (check == SpotCheck::clear) return;
+    const int crowding = check == SpotCheck::clear ? SpotCrowding(spot) : -1;
+    if (crowding == 0) return;
     BaseSpot better{};
-    if (!ChooseBaseSpot(p.altarX, p.altarY, p.altarZ, spot.dirX, spot.dirZ, p.fieldEnd.wx, p.fieldEnd.wz, p.ownerAccount, better, true)) {
-        Log("Town Portal: base portal spot is blocked and no clear spot was found around the altar");
+    int betterCrowding = 0;
+    if (!ChooseBaseSpot(p.altarX, p.altarY, p.altarZ, spot.dirX, spot.dirZ, p.fieldEnd.wx, p.fieldEnd.wz, p.ownerAccount, better, true, &betterCrowding)) {
+        if (crowding < 0) Log("Town Portal: base portal spot is blocked and no clear spot was found around the altar");
         return;
     }
+    if (crowding >= 0 && betterCrowding >= crowding) return; // already the most open spot
     p.baseEnd.wx = better.x;
     p.baseEnd.wy = better.y;
     p.baseEnd.wz = better.z;
@@ -861,7 +901,10 @@ void CheckOwnBasePortal(void* gameClient, portal::PortalInstance& p) {
     p.baseEnd.SetNormal(-better.dirX, -better.dirZ);
     portal::travel::UpsertPortal(p);
     BroadcastPortalOpen(gameClient, p);
-    Log("Town Portal: base portal moved to a clear spot by the altar");
+    char line[128];
+    if (crowding < 0) std::snprintf(line, sizeof(line), "Town Portal: base portal moved to a clear spot by the altar (crowding %d)", betterCrowding);
+    else std::snprintf(line, sizeof(line), "Town Portal: base portal moved away from nearby objects (crowding %d -> %d)", crowding, betterCrowding);
+    Log(line);
 }
 
 // Field portal placement: the portal stands `distance` ahead of the player, facing them. It must
@@ -1409,9 +1452,14 @@ void TryOpenPortalAtPlayer(void* gameClient, uint8_t* uiClient,
     float baseY = altarY;
     float baseZ = altarZ + baseDirZ * 3.2f;
     BaseSpot spot{};
-    if (ChooseBaseSpot(altarX, altarY, altarZ, baseDirX, baseDirZ, fieldX, fieldZ, localAccount, spot, false)) {
+    int crowding = 0;
+    if (ChooseBaseSpot(altarX, altarY, altarZ, baseDirX, baseDirZ, fieldX, fieldZ, localAccount, spot, false, &crowding)) {
         baseX = spot.x; baseY = spot.y; baseZ = spot.z;
         baseDirX = spot.dirX; baseDirZ = spot.dirZ;
+        char line[128];
+        std::snprintf(line, sizeof(line), "Town Portal: altar-side spot %.1f m from the altar, crowding %d",
+                      std::hypot(baseX - altarX, baseZ - altarZ), crowding);
+        Log(line);
     }
     // The first cast in this world sets the home spot: later casts use it while it is clear,
     // so one trip's snapshot of it serves every portal after.
@@ -1632,6 +1680,7 @@ void RunGameplayTick(void* app, std::vector<portal::PortalInstance>& outPortals,
 #endif
 
     TrackFacing(px, pz);
+    const float lookX = dirX, lookZ = dirZ; // the camera's look, before a cast swaps in the walking direction
     if (tPressed && PortalsAvailable()) {
         if (g_facing.known) { dirX = g_facing.x; dirZ = g_facing.z; }
         TryOpenPortalAtPlayer(gameClient, uiClient, px, py, pz, dirX, dirZ);
@@ -1732,6 +1781,8 @@ void RunGameplayTick(void* app, std::vector<portal::PortalInstance>& outPortals,
     if (nearestPortal->closing || now - std::min(now, nearestPortal->openedTick) < portal::kPortalFormMs) return;
     const auto& nearestEnd = nearestIsFieldSide ? nearestPortal->fieldEnd : nearestPortal->baseEnd;
     if (portal::travel::IsRayOccluded(px,py+1.1f,pz,nearestEnd.wx,nearestEnd.wy+1.1f,nearestEnd.wz)) return;
+    // Turned away (to a chest beside it, say): no prompt, and E stays the game's.
+    if (!portal::promptview::Facing(px, pz, lookX, lookZ, nearestEnd.wx, nearestEnd.wz, nearestEnd.rx, nearestEnd.rz)) return;
 
     bool isOwner = (nearestPortal->ownerAccount == localAccount);
     const char* destination = portal::names::Destination(uiClient, *nearestPortal, nearestIsFieldSide);
@@ -1996,10 +2047,15 @@ GREENEYE_MOD_START {
     auto* exe = reinterpret_cast<uint8_t*>(GetModuleHandleW(nullptr));
     auto* nt = reinterpret_cast<IMAGE_NT_HEADERS64*>(exe + reinterpret_cast<IMAGE_DOS_HEADER*>(exe)->e_lfanew);
     bool serverSide = (host->side == kGreeneyeServer);
+    // Another build of the game (a beta branch, a patch, a modified exe): start anyway. Every
+    // hook is found by signature and turns itself off when missing; the cast animation and the
+    // in-frame renderer, which read fixed layouts, keep their own exact-build checks.
     if (nt->FileHeader.TimeDateStamp != (serverSide ? 0x6ad77f14u : 0x6ad77f0cu) ||
         nt->OptionalHeader.SizeOfImage != (serverSide ? 0x1dd1000u : 0x2a1e000u)) {
-        Log("Town Portal: unverified game build; no hooks installed");
-        return false;
+        char line[200];
+        std::snprintf(line, sizeof(line), "Town Portal: WARNING: game build %08lx/%lx is not the one this version was made for; trying anyway (report problems with this log)",
+                      static_cast<unsigned long>(nt->FileHeader.TimeDateStamp), static_cast<unsigned long>(nt->OptionalHeader.SizeOfImage));
+        Log(line);
     }
 
     if (!greeneye::ClaimProcess(L"TownPortal", host)) {
@@ -2014,7 +2070,7 @@ GREENEYE_MOD_START {
     }
 
     if (serverSide) {
-        Log("Town Portals 1.0.0: server companion loaded");
+        Log("Town Portals 1.0.1: server companion loaded");
         return true;
     }
 
@@ -2076,7 +2132,7 @@ GREENEYE_MOD_START {
     }
     portal::casting::Init(host);
 
-    Log("Town Portals 1.0.0: press T (OpenPortalKey in town-portal.ini) to open a portal to your Preferred Spawn Flame Altar");
+    Log("Town Portals 1.0.1: press T (OpenPortalKey in town-portal.ini) to open a portal to your Preferred Spawn Flame Altar");
     return true;
 }
 

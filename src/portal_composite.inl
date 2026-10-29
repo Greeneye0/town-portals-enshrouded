@@ -344,7 +344,9 @@ void CompositeRecord(void* pass,void* state,const ImageView& depth,bool inFrame,
         if(inFrame&&invExposure>0){
             bool shroud=false;snapshot[i]=SharedSnapshot(slot.portal,slot.field,shroud);
             if(!snapshot[i]){int local=FindSnapshot(destination);if(local>=0){snapshot[i]=&c.snapshots[local];g_snapshotShown[local]=now;}}
-            if(!snapshot[i]&&!slot.field&&!slot.portal.closing)g_missing={slot.portal.portalId,now,destination};
+            // Either side: the way home too has a default picture until a capture of the altar
+            // matches (none yet, or the base end moved since the saved one was taken).
+            if(!snapshot[i]&&!slot.portal.closing)g_missing={slot.portal.portalId,now,destination};
         }
         bool live=!inFrame&&(g_ownedRenderFlags&0x7ff)==0x7ff&&g_renderedPortal==slot.portal.portalId&&g_renderedField==slot.field;
         // Opening: 0..1 over the channel. Closing: shrink back over 0.5 s.

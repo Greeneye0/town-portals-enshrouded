@@ -329,8 +329,14 @@ inline bool Detect(std::string_view legendary,Lang& out) {
     else if(starts("lend"))out=Lang::pt;
     else if(starts("legendarn"))out=Lang::pl;
     else if(starts("efsane"))out=Lang::tr;
-    else if(has("ы")||has("Ы"))out=Lang::ru;
-    else if(has("Леген")||has("ЛЕГЕН")||has("леген"))out=Lang::uk;
+    else if(has("Леген")||has("ЛЕГЕН")||has("леген")) {
+        // Russian or Ukrainian: the letters only Ukrainian has, else its endings (-ний, -на, -не);
+        // the rest is Russian, whichever form the game uses (-ный, -ая, -ое, ...).
+        auto ends=[&](const char* suffix){size_t n=strlen(suffix);return legendary.size()>=n&&legendary.substr(legendary.size()-n)==suffix;};
+        bool uk=has("і")||has("І")||has("ї")||has("Ї")||has("є")||has("Є")||has("ґ")||has("Ґ")||
+                ends("ний")||ends("на")||ends("не")||ends("НИЙ")||ends("НА")||ends("НЕ");
+        out=uk&&!has("ы")&&!has("Ы")?Lang::uk:Lang::ru;
+    }
     else if(has("전설"))out=Lang::ko;
     else if(has("レジェ")||has("伝説"))out=Lang::ja;
     else if(has("传")||has("说"))out=Lang::zhHans;

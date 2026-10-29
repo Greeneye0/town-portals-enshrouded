@@ -17,7 +17,9 @@ float SceneLight(uint8_t srgb);
 void Request(int region,bool night);
 // Any image file Windows can decode, as 8-bit RGBA rows (straight alpha). Initialises COM on
 // the calling thread when needed. False when missing or unreadable.
-bool LoadRgba(const wchar_t* path,uint32_t& width,uint32_t& height,std::vector<uint8_t>& rgba);
+// fitWidth/fitHeight (both set): scale the picture to that size (high-quality cubic), so a
+// replaced default picture of another size still loads.
+bool LoadRgba(const wchar_t* path,uint32_t& width,uint32_t& height,std::vector<uint8_t>& rgba,uint32_t fitWidth=0,uint32_t fitHeight=0);
 int Take(int region,bool night,std::shared_ptr<sharing::Image>& image);
 void Stop();
 }
