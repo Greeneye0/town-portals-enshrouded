@@ -1,4 +1,4 @@
-Town Portals 1.0.1 for Enshrouded
+Town Portals 1.0.2 for Enshrouded
 Saving your ass since 2026.
 
 Open a portal home from anywhere. Press T: after a short cast, a portal opens in front
@@ -68,7 +68,7 @@ Dedicated server (server admin only)
    On a rented server, upload the same files next to enshrouded_server.exe with the
    host's file manager (if it lets you add DLL files).
 
-Check: greeneye\loader.log has a line with "Town Portals 1.0.1" (the server's says
+Check: greeneye\loader.log has a line with "Town Portals 1.0.2" (the server's says
 "server companion loaded").
 Uninstall: delete greeneye\town-portal (and dbgcore.dll if no other Greeneye mod uses
 it), in the game folder and on the server.

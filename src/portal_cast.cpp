@@ -1,6 +1,7 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include "portal_cast.h"
+#include "portal_build.h"
 #include "portal_cast_hooks.h"
 #include "portal_snapshot_timing.h"
 #include "portal_cast_data.h"
@@ -141,8 +142,7 @@ bool BindSafe(void* client){
 }
 bool Init(const GreeneyeHost* host){
  auto* exe=reinterpret_cast<uint8_t*>(GetModuleHandleW(nullptr));
- auto* nt=reinterpret_cast<IMAGE_NT_HEADERS64*>(exe+reinterpret_cast<IMAGE_DOS_HEADER*>(exe)->e_lfanew);
- if(!greeneye::HostHasHooks(host)||!host->redirectCall||!host->read||nt->FileHeader.TimeDateStamp!=0x6ad77f0c||nt->OptionalHeader.SizeOfImage!=0x2a1e000)return false;
+ if(!greeneye::HostHasHooks(host)||!host->redirectCall||!host->read||!build::Client())return false;
  auto* site=exe+0x92458a;
  if(!hooks::CheckCall(host->read,site,exe+0x91c260))return false;
  g_component=reinterpret_cast<ComponentFn>(exe+0x9a75d0);

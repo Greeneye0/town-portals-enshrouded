@@ -521,6 +521,7 @@ void PlayerTick(void* ctx, void* descriptors) {
     if (g_hostWorld.storage && g_hostWorld.storage != storage) {
         for (auto& p : g_requests) p = {};
         g_hostWorld.terrain = nullptr;
+        g_observedHostEntity.store(0);
     }
     g_hostWorld.storage = storage;
     g_hostWorld.seen = now;
@@ -1271,6 +1272,9 @@ bool ClosePortalByOwner(uint64_t ownerAccount, uint64_t portalId) {
 }
 
 void ClearAllPortals() {
+    // Leaving or switching worlds: the entity seen while hosting the last one is not this
+    // player's in the next (a stale one made the field check trace into the player's own body).
+    g_observedHostEntity.store(0);
     std::lock_guard guard(g_lock);
     for (auto& slot : g_portals) {
         slot = {};

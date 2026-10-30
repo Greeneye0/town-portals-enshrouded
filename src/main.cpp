@@ -1,6 +1,7 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
+#include <Xinput.h>
 #pragma comment(lib, "advapi32.lib") // RegGetValueW: Steam's folder, for the game's volume settings
 #include <algorithm>
 #include <cmath>
@@ -11,6 +12,7 @@
 #include <string_view>
 #include <vector>
 #include "greeneye.h"
+#include "portal_build.h"
 #include "portal_protocol.h"
 #include "portal_render.h"
 #include "portal_colors.h"
@@ -204,6 +206,30 @@ bool IsTextInputActive() {
 
 bool KeyDown(int vk) {
     return (GetAsyncKeyState(vk) & 0x8000) != 0;
+}
+
+// A gamepad's Y, the button the portal prompt shows for the game's interact, through XInput
+// (Steam Input and Proton provide it too). Asking about an empty slot can stall for a while,
+// so slots without a pad are tried again only every 2 s.
+bool PadInteractDown() {
+    using GetStateFn = DWORD(WINAPI*)(DWORD, XINPUT_STATE*);
+    static GetStateFn getState = [] {
+        HMODULE module = GetModuleHandleW(L"xinput1_4.dll");
+        if (!module) module = LoadLibraryW(L"xinput1_4.dll");
+        if (!module) module = LoadLibraryW(L"xinput9_1_0.dll");
+        return module ? reinterpret_cast<GetStateFn>(GetProcAddress(module, "XInputGetState")) : nullptr;
+    }();
+    static uint64_t retryAt[XUSER_MAX_COUNT]{};
+    if (!getState) return false;
+    const uint64_t now = GetTickCount64();
+    bool down = false;
+    for (DWORD pad = 0; pad < XUSER_MAX_COUNT; ++pad) {
+        if (now < retryAt[pad]) continue;
+        XINPUT_STATE state{};
+        if (getState(pad, &state) != ERROR_SUCCESS) { retryAt[pad] = now + 2000; continue; }
+        down |= (state.Gamepad.wButtons & XINPUT_GAMEPAD_Y) != 0;
+    }
+    return down;
 }
 
 void SendHiddenLine(void* gameClient, std::string_view text) {
@@ -911,7 +937,8 @@ void CheckOwnBasePortal(void* gameClient, portal::PortalInstance& p) {
 // not stand in a wall or stick through one: clear from the player to just past the portal,
 // across its width, up to its top, and out of its back face at both edges (the lens and halo
 // stick out behind it). Unknown (no collision data there) counts as clear: the player is there.
-SpotCheck CheckFieldSpot(float px, float py, float pz, float dirX, float dirZ, float distance, float& outY) {
+SpotCheck CheckFieldSpot(float px, float py, float pz, float dirX, float dirZ, float distance, float& outY,
+                         const char** why = nullptr) {
     using portal::math::Visibility;
     auto context = portal::travel::GetVisibilityContext();
     bool unknown = false;
@@ -922,21 +949,26 @@ SpotCheck CheckFieldSpot(float px, float py, float pz, float dirX, float dirZ, f
     };
     const float cx = px + dirX * distance, cz = pz + dirZ * distance, rx = -dirZ, rz = dirX;
     float y = py;
-    if (!portal::travel::RefineLocalGroundY(cx, y, cz)) unknown = true;
-    else if (std::fabs(y - py) > 1.5f) return SpotCheck::blocked;
+    // Without the ground there (the terrain lookup sometimes fails for a moment), its height
+    // is a guess: a rise of half a metre would meet the shin-height tests, so they are skipped.
+    const bool ground = portal::travel::RefineLocalGroundY(cx, y, cz);
+    if (!ground) unknown = true;
+    else if (std::fabs(y - py) > 1.5f) { if (why) *why = "ground height"; return SpotCheck::blocked; }
     outY = y;
     // From just outside the player's own collider to just behind the portal.
     for (float h : {0.6f, 1.6f})
-        if (!clear(px + dirX * 0.5f, py + h, pz + dirZ * 0.5f, cx + dirX * 0.45f, y + h, cz + dirZ * 0.45f))
-            return SpotCheck::blocked;
-    // Its width (1.9 m across the middle) and height (the top is about 3.2 m up).
-    for (float h : {0.5f, 1.6f, 2.6f})
-        if (!clear(cx - rx * 0.95f, y + h, cz - rz * 0.95f, cx + rx * 0.95f, y + h, cz + rz * 0.95f))
-            return SpotCheck::blocked;
-    if (!clear(cx, y + 0.3f, cz, cx, y + 3.1f, cz)) return SpotCheck::blocked;
+        if ((ground || h > 1.0f) && !clear(px + dirX * 0.5f, py + h, pz + dirZ * 0.5f, cx + dirX * 0.45f, y + h, cz + dirZ * 0.45f))
+            { if (why) *why = h < 1.0f ? "path low" : "path high"; return SpotCheck::blocked; }
+    // Its width and height: an upright oval 1.9 m across the middle and about 3.2 m tall, so
+    // near the ground and the top it is narrower (a full-width test at shin height refused
+    // portals on paths between grass banks and on side slopes).
+    for (auto [h, half] : {std::pair{0.5f, 0.7f}, std::pair{1.6f, 0.95f}, std::pair{2.6f, 0.75f}})
+        if ((ground || h > 1.0f) && !clear(cx - rx * half, y + h, cz - rz * half, cx + rx * half, y + h, cz + rz * half))
+            { if (why) *why = h < 1.0f ? "width low" : h < 2.0f ? "width middle" : "width top"; return SpotCheck::blocked; }
+    if (!clear(cx, y + 0.3f, cz, cx, y + 3.1f, cz)) { if (why) *why = "height"; return SpotCheck::blocked; }
     for (float side : {-0.8f, 0.8f})
         if (!clear(cx + rx * side, y + 1.6f, cz + rz * side, cx + rx * side + dirX * 0.45f, y + 1.6f, cz + rz * side + dirZ * 0.45f))
-            return SpotCheck::blocked;
+            { if (why) *why = side < 0.0f ? "back left" : "back right"; return SpotCheck::blocked; }
     return unknown ? SpotCheck::unknown : SpotCheck::clear;
 }
 
@@ -1413,7 +1445,14 @@ void TryOpenPortalAtPlayer(void* gameClient, uint8_t* uiClient,
     float fieldDistance = 0.0f, fieldY = py;
     for (float distance : {2.8f, 2.5f, 2.2f}) {
         float y = py;
-        if (CheckFieldSpot(px, py, pz, dirX, dirZ, distance, y) == SpotCheck::blocked) continue;
+        const char* why = "";
+        if (CheckFieldSpot(px, py, pz, dirX, dirZ, distance, y, &why) == SpotCheck::blocked) {
+            char line[160];
+            std::snprintf(line, sizeof(line), "Town Portal: no room %.1f m ahead (%s; ground %.2f%s, player %.2f)", distance, why, y,
+                          y == py ? " (not found)" : "", py);
+            Log(line);
+            continue;
+        }
         fieldDistance = distance;
         fieldY = y;
         break;
@@ -1667,7 +1706,7 @@ void RunGameplayTick(void* app, std::vector<portal::PortalInstance>& outPortals,
     bool tPressed = tDown && !g_tWasDown;
     g_tWasDown = tDown;
 
-    bool ePhysical = KeyDown('E');
+    bool ePhysical = KeyDown('E') || PadInteractDown();
     bool eDown = canAcceptHotkeys && ePhysical &&
                  !KeyDown(VK_CONTROL) && !KeyDown(VK_MENU);
     bool ePressed = eDown && !g_eWasDown;
@@ -2050,8 +2089,7 @@ GREENEYE_MOD_START {
     // Another build of the game (a beta branch, a patch, a modified exe): start anyway. Every
     // hook is found by signature and turns itself off when missing; the cast animation and the
     // in-frame renderer, which read fixed layouts, keep their own exact-build checks.
-    if (nt->FileHeader.TimeDateStamp != (serverSide ? 0x6ad77f14u : 0x6ad77f0cu) ||
-        nt->OptionalHeader.SizeOfImage != (serverSide ? 0x1dd1000u : 0x2a1e000u)) {
+    if (serverSide ? !portal::build::Matches(portal::build::kServerStamp, portal::build::kServerSize) : !portal::build::Client()) {
         char line[200];
         std::snprintf(line, sizeof(line), "Town Portal: WARNING: game build %08lx/%lx is not the one this version was made for; trying anyway (report problems with this log)",
                       static_cast<unsigned long>(nt->FileHeader.TimeDateStamp), static_cast<unsigned long>(nt->OptionalHeader.SizeOfImage));
@@ -2070,7 +2108,7 @@ GREENEYE_MOD_START {
     }
 
     if (serverSide) {
-        Log("Town Portals 1.0.1: server companion loaded");
+        Log("Town Portals 1.0.2: server companion loaded");
         return true;
     }
 
@@ -2132,7 +2170,7 @@ GREENEYE_MOD_START {
     }
     portal::casting::Init(host);
 
-    Log("Town Portals 1.0.1: press T (OpenPortalKey in town-portal.ini) to open a portal to your Preferred Spawn Flame Altar");
+    Log("Town Portals 1.0.2: press T (OpenPortalKey in town-portal.ini) to open a portal to your Preferred Spawn Flame Altar");
     return true;
 }
 

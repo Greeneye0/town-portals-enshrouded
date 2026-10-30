@@ -2,8 +2,45 @@
 #define NOMINMAX
 #include <windows.h>
 #include <compressapi.h>
+#include "greeneye.h"
 #include "portal_snapshot_cache.h"
-#pragma comment(lib,"Cabinet.lib")
+
+namespace {
+// The Compression API, looked up at run time: Wine's (Proton's, SteamOS's) cabinet.dll does
+// not have it, and an import missing there is bound to a stub that crashes the game when
+// called. Without it pictures are shared uncompressed, and compressed ones (other players',
+// the saved home picture) cannot be read; the portal shows its default picture instead.
+struct CompressionApi {
+    decltype(&::CreateCompressor) createCompressor{};
+    decltype(&::CreateDecompressor) createDecompressor{};
+    decltype(&::CloseCompressor) closeCompressor{};
+    decltype(&::CloseDecompressor) closeDecompressor{};
+    decltype(&::Compress) compress{};
+    decltype(&::Decompress) decompress{};
+    bool Available() const {return createCompressor&&createDecompressor&&closeCompressor&&closeDecompressor&&compress&&decompress;}
+};
+const CompressionApi& Cabinet() {
+    static const CompressionApi api=[]{
+        CompressionApi a{};
+        // Wine reports itself through ntdll; its cabinet.dll may gain stubs that are not real.
+        if(GetProcAddress(GetModuleHandleW(L"ntdll.dll"),"wine_get_version"))return a;
+        if(HMODULE m=LoadLibraryW(L"cabinet.dll")){
+            a.createCompressor=reinterpret_cast<decltype(a.createCompressor)>(GetProcAddress(m,"CreateCompressor"));
+            a.createDecompressor=reinterpret_cast<decltype(a.createDecompressor)>(GetProcAddress(m,"CreateDecompressor"));
+            a.closeCompressor=reinterpret_cast<decltype(a.closeCompressor)>(GetProcAddress(m,"CloseCompressor"));
+            a.closeDecompressor=reinterpret_cast<decltype(a.closeDecompressor)>(GetProcAddress(m,"CloseDecompressor"));
+            a.compress=reinterpret_cast<decltype(a.compress)>(GetProcAddress(m,"Compress"));
+            a.decompress=reinterpret_cast<decltype(a.decompress)>(GetProcAddress(m,"Decompress"));
+        }
+        if(!a.Available()){
+            a={};
+            if(auto* host=greeneye::Host())host->log("Town Portal: no Windows Compression API here (Wine / Proton); portal pictures are not shared with other players or kept between sessions");
+        }
+        return a;
+    }();
+    return api;
+}
+}
 
 namespace portal::sharing {
 namespace {
@@ -24,18 +61,21 @@ bool Encode(const Image& image,Encoded& out) {
     if(image.pixels.size()!=kRawBytes||!ValidMetadata(image.meta)||!FinitePixels(image.pixels))return false;
     out={image.key,image.revision,image.meta,Checksum(image.pixels),image.pixels};out.meta.codec=0;
     COMPRESSOR_HANDLE c{};
-    if(!CreateCompressor(COMPRESS_ALGORITHM_XPRESS_HUFF,nullptr,&c))return true;
+    // Without the Compression API (Wine) a picture is not shared at all: 16 MB uncompressed
+    // would hold up the other pictures for long.
+    if(!Cabinet().Available())return false;
+    if(!Cabinet().createCompressor(COMPRESS_ALGORITHM_XPRESS_HUFF,nullptr,&c))return true;
     auto planes=Planes(image.pixels,false);SIZE_T size{};
-    Compress(c,planes.data(),planes.size(),nullptr,0,&size);
+    Cabinet().compress(c,planes.data(),planes.size(),nullptr,0,&size);
     // The sizing call reports capacity (which can exceed raw size), not the
     // eventual compressed length. Compare the actual size after compression.
     if(size&&size<=kMaxEncoded){
         std::vector<uint8_t> packed(size);
-        if(Compress(c,planes.data(),planes.size(),packed.data(),packed.size(),&size)&&size<kRawBytes){
+        if(Cabinet().compress(c,planes.data(),planes.size(),packed.data(),packed.size(),&size)&&size<kRawBytes){
             packed.resize(size);out.bytes=std::move(packed);out.meta.codec=1;
         }
     }
-    CloseCompressor(c);return true;
+    Cabinet().closeCompressor(c);return true;
 }
 bool Decode(const Encoded& encoded,Image& out) {
     if(!ValidMetadata(encoded.meta)||encoded.bytes.empty()||encoded.bytes.size()>kMaxEncoded)return false;
@@ -43,11 +83,11 @@ bool Decode(const Encoded& encoded,Image& out) {
     if(!encoded.meta.codec){if(encoded.bytes.size()!=kRawBytes)return false;pixels=encoded.bytes;}
     else {
         DECOMPRESSOR_HANDLE d{};
-        if(!CreateDecompressor(COMPRESS_ALGORITHM_XPRESS_HUFF,nullptr,&d))return false;
+        if(!Cabinet().Available()||!Cabinet().createDecompressor(COMPRESS_ALGORITHM_XPRESS_HUFF,nullptr,&d))return false;
         // Bound the output even for malicious/corrupt compression headers.
         std::vector<uint8_t> planes(kRawBytes);SIZE_T size{};
-        bool ok=Decompress(d,encoded.bytes.data(),encoded.bytes.size(),planes.data(),planes.size(),&size)!=FALSE;
-        CloseDecompressor(d);if(!ok||size!=kRawBytes)return false;
+        bool ok=Cabinet().decompress(d,encoded.bytes.data(),encoded.bytes.size(),planes.data(),planes.size(),&size)!=FALSE;
+        Cabinet().closeDecompressor(d);if(!ok||size!=kRawBytes)return false;
         pixels=Planes(planes,true);
     }
     if(Checksum(pixels)!=encoded.crc||!FinitePixels(pixels))return false;
@@ -69,17 +109,17 @@ std::vector<uint8_t> EncodeFile(const Key& key,const sharing::Image& image) {
     header.meta=image.meta;header.meta.codec=1;header.crc=sharing::Checksum(packed);
     const auto planes=sharing::Planes(packed,false,6);
     COMPRESSOR_HANDLE c{};
-    if(!CreateCompressor(COMPRESS_ALGORITHM_LZMS,nullptr,&c))return {};
-    SIZE_T size{};Compress(c,planes.data(),planes.size(),nullptr,0,&size);
+    if(!Cabinet().Available()||!Cabinet().createCompressor(COMPRESS_ALGORITHM_LZMS,nullptr,&c))return {};
+    SIZE_T size{};Cabinet().compress(c,planes.data(),planes.size(),nullptr,0,&size);
     std::vector<uint8_t> out;
     if(size){
         out.resize(sizeof(header)+size);
-        if(Compress(c,planes.data(),planes.size(),out.data()+sizeof(header),size,&size)){
+        if(Cabinet().compress(c,planes.data(),planes.size(),out.data()+sizeof(header),size,&size)){
             out.resize(sizeof(header)+size);header.size=uint32_t(size);
             std::memcpy(out.data(),&header,sizeof(header));
         } else out.clear();
     }
-    CloseCompressor(c);return out;
+    Cabinet().closeCompressor(c);return out;
 }
 bool DecodeFile(const Key& key,std::span<const uint8_t> file,sharing::Image& out) {
     if(file.size()<sizeof(FileHeader))return false;
@@ -87,11 +127,11 @@ bool DecodeFile(const Key& key,std::span<const uint8_t> file,sharing::Image& out
     if(h.magic!=kFileMagic||(h.version!=kFileVersion&&h.version!=2)||h.account!=key.account||std::memcmp(h.altar,key.altar,sizeof(h.altar))||
        !h.size||h.size>sharing::kMaxEncoded||file.size()!=sizeof(h)+h.size||!sharing::ValidMetadata(h.meta))return false;
     DECOMPRESSOR_HANDLE d{};
-    if(!CreateDecompressor(h.version==2?COMPRESS_ALGORITHM_XPRESS_HUFF:COMPRESS_ALGORITHM_LZMS,nullptr,&d))return false;
+    if(!Cabinet().Available()||!Cabinet().createDecompressor(h.version==2?COMPRESS_ALGORITHM_XPRESS_HUFF:COMPRESS_ALGORITHM_LZMS,nullptr,&d))return false;
     // Bounded output even for a damaged compression header.
     std::vector<uint8_t> planes(kPackedBytes);SIZE_T size{};
-    const bool ok=Decompress(d,file.data()+sizeof(h),h.size,planes.data(),planes.size(),&size)!=FALSE;
-    CloseDecompressor(d);
+    const bool ok=Cabinet().decompress(d,file.data()+sizeof(h),h.size,planes.data(),planes.size(),&size)!=FALSE;
+    Cabinet().closeDecompressor(d);
     if(!ok||size!=kPackedBytes)return false;
     const auto packed=sharing::Planes(planes,true,6);
     if(sharing::Checksum(packed)!=h.crc)return false;

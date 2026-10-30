@@ -1,5 +1,6 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
+#include "portal_build.h"
 #include "portal_quality.h"
 #include "portal_scene_probe.h"
 #include "portal_snapshot_share.h"
@@ -1293,9 +1294,7 @@ bool Init(const GreeneyeHost* host) {
     // Layout probes must fail closed on an unverified executable, even if a
     // function signature happens to survive a game update.
     auto* module=reinterpret_cast<uint8_t*>(GetModuleHandleW(nullptr));
-    auto* dos=reinterpret_cast<IMAGE_DOS_HEADER*>(module);
-    auto* pe=reinterpret_cast<IMAGE_NT_HEADERS64*>(module+dos->e_lfanew);
-    if(pe->FileHeader.TimeDateStamp!=0x6ad77f0c||pe->OptionalHeader.SizeOfImage!=0x2a1e000) {
+    if(!build::Client()) {
         host->log("Town Portal scene probe: unsupported engine build; native research disabled");
         return false;
     }
