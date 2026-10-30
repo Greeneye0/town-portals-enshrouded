@@ -1,4 +1,4 @@
-Town Portals 1.0.2 for Enshrouded
+Town Portals 1.0.3 for Enshrouded
 Saving your ass since 2026.
 
 Open a portal home from anywhere. Press T: after a short cast, a portal opens in front
@@ -20,8 +20,8 @@ HOW IT WORKS
   by day or by night. Your altar's picture is saved, so it shows again at your next login.
   In multiplayer, players share their pictures, so others see your portal's view too.
 - While you travel, a painted world map shows the trip: your portal, your altar, and a
-  path that grows as the destination loads, with a loading percentage. The map is in the
-  game's language (English shows it as painted).
+  path that grows as the destination loads, with a loading percentage. The map is
+  lettered in the game's language (your own map: map\map-<language>.jpg, e.g. map-ru.jpg).
 - On low graphics settings (Quality Preset Lowest, Low or Medium) portals draw a lighter
   version: a coarser picture and no light on the ground. PortalQuality in the .ini
   overrides it.
@@ -68,7 +68,7 @@ Dedicated server (server admin only)
    On a rented server, upload the same files next to enshrouded_server.exe with the
    host's file manager (if it lets you add DLL files).
 
-Check: greeneye\loader.log has a line with "Town Portals 1.0.2" (the server's says
+Check: greeneye\loader.log has a line with "Town Portals 1.0.3" (the server's says
 "server companion loaded").
 Uninstall: delete greeneye\town-portal (and dbgcore.dll if no other Greeneye mod uses
 it), in the game folder and on the server.

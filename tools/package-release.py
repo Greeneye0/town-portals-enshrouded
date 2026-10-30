@@ -39,7 +39,9 @@ assert len(biomes) == 16, f"expected 16 default pictures in assets/biomes, found
 (client / "biomes").mkdir()
 for source in biomes:
     shutil.copy2(source, client / "biomes" / source.name)
-map_files = ("map.jpg", "map-en.jpg", "backdrop.jpg", "altar.png", "altar-base.png", "altar-flame.png")
+# The map lettered per language: map-<code>.jpg (tools/map/letter_map.py).
+lettered = tuple(sorted(p.name for p in (root / "assets/map").glob("map-*.jpg")))
+map_files = ("map.jpg", *lettered, "backdrop.jpg", "altar.png", "altar-base.png", "altar-flame.png")
 (client / "map").mkdir()
 for file in map_files:
     shutil.copy2(root / "assets/map" / file, client / "map" / file)

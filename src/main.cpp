@@ -2,6 +2,7 @@
 #define NOMINMAX
 #include <windows.h>
 #include <Xinput.h>
+#include <dxgi.h>
 #pragma comment(lib, "advapi32.lib") // RegGetValueW: Steam's folder, for the game's volume settings
 #include <algorithm>
 #include <cmath>
@@ -2077,6 +2078,32 @@ extern "C" __declspec(dllexport) int TownPortalDevControl(
 }
 #endif
 
+// The PC's graphics adapters and their video memory, for bug reports (portal pictures depend on
+// the GPU keeping them). DXGI is loaded only for this, so the build gains no link dependency.
+void LogGraphicsAdapters() {
+    HMODULE dxgi = LoadLibraryW(L"dxgi.dll");
+    if (!dxgi) return;
+    using CreateFactory = HRESULT(WINAPI*)(REFIID, void**);
+    auto create = reinterpret_cast<CreateFactory>(GetProcAddress(dxgi, "CreateDXGIFactory1"));
+    IDXGIFactory1* factory = nullptr;
+    if (create && SUCCEEDED(create(__uuidof(IDXGIFactory1), reinterpret_cast<void**>(&factory)))) {
+        IDXGIAdapter1* adapter = nullptr;
+        for (UINT i = 0; factory->EnumAdapters1(i, &adapter) != DXGI_ERROR_NOT_FOUND; ++i) {
+            DXGI_ADAPTER_DESC1 desc{};
+            if (SUCCEEDED(adapter->GetDesc1(&desc)) && !(desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)) {
+                char name[128]{}, line[224]{};
+                WideCharToMultiByte(CP_UTF8, 0, desc.Description, -1, name, sizeof(name), nullptr, nullptr);
+                std::snprintf(line, sizeof(line), "Town Portal: graphics adapter %s (%llu MB video memory)", name,
+                              (unsigned long long)(desc.DedicatedVideoMemory >> 20));
+                Log(line);
+            }
+            adapter->Release();
+        }
+        factory->Release();
+    }
+    FreeLibrary(dxgi);
+}
+
 GREENEYE_MOD_START {
     if (!greeneye::HostHasHooks(host) || !host->find || !host->read) {
         return false;
@@ -2108,7 +2135,7 @@ GREENEYE_MOD_START {
     }
 
     if (serverSide) {
-        Log("Town Portals 1.0.2: server companion loaded");
+        Log("Town Portals 1.0.3: server companion loaded");
         return true;
     }
 
@@ -2169,8 +2196,9 @@ GREENEYE_MOD_START {
         return false;
     }
     portal::casting::Init(host);
+    LogGraphicsAdapters();
 
-    Log("Town Portals 1.0.2: press T (OpenPortalKey in town-portal.ini) to open a portal to your Preferred Spawn Flame Altar");
+    Log("Town Portals 1.0.3: press T (OpenPortalKey in town-portal.ini) to open a portal to your Preferred Spawn Flame Altar");
     return true;
 }
 

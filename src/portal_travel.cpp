@@ -518,23 +518,35 @@ void PlayerTick(void* ctx, void* descriptors) {
     uint64_t now = GetTickCount64();
     std::lock_guard guard(g_lock);
 
+    // Hosting a world, every player's tick passes here, the friends' too. Which one is this
+    // machine's player is only certain while it ticks alone; with others in the world it is
+    // kept from then (taking whoever ticked last moved the host's travel onto a friend's
+    // character and refused the host's portals until a fast travel).
+    static uint64_t tickedAt[17]{};
     if (g_hostWorld.storage && g_hostWorld.storage != storage) {
         for (auto& p : g_requests) p = {};
         g_hostWorld.terrain = nullptr;
         g_observedHostEntity.store(0);
+        for (auto& t : tickedAt) t = 0;
     }
     g_hostWorld.storage = storage;
     g_hostWorld.seen = now;
+    bool alone = true;
     if (id != 0 && id <= 16) {
-        g_observedHostEntity.store(id);
+        tickedAt[id] = now;
+        for (uint32_t other = 1; other <= 16; ++other)
+            if (other != id && tickedAt[other] && now - tickedAt[other] < 1500) alone = false;
+        if (alone) g_observedHostEntity.store(id);
+        else if (!g_observedHostEntity.load() && id == g_localEntity.load()) g_observedHostEntity.store(id);
     }
+    const uint32_t own = g_observedHostEntity.load();
 
     uint64_t localAcc = g_localAccount.load();
     for (auto& p : g_requests) {
         if (p.stage == Stage::none) continue;
         // Match either exact entity ID or local host player account when world reassigned entity ID (e.g. entity=2)
         if (p.entity != id) {
-            if (p.account != 0 && p.account == localAcc && !g_server.load()) {
+            if (p.account != 0 && p.account == localAcc && !g_server.load() && (alone || id == own)) {
                 p.entity = id;
             } else {
                 continue;

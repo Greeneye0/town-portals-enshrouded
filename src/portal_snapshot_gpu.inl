@@ -18,6 +18,20 @@ struct SnapshotDownload {
     homecache::Key home{}; // set: the home snapshot cache's readback, not sharing's
 };
 SnapshotDownload g_download;
+// A picture read back with every pixel the same: the GPU kept nothing of it (seen as 295-byte
+// shares and swirl-only portals on one player's PC, 2026-10-29). Logged once per kind.
+void LogIfBlank(const sharing::Image& image,const char* what) {
+    const auto& p=image.pixels;
+    if(p.size()<16)return;
+    uint64_t first;std::memcpy(&first,p.data(),8);
+    for(size_t at=8;at+8<=p.size();at+=8*61){uint64_t v;std::memcpy(&v,p.data()+at,8);if(v!=first)return;}
+    static bool logged[2]{};
+    const int kind=std::strcmp(what,"home")==0;
+    if(logged[kind])return;logged[kind]=true;
+    char line[192]{};
+    std::snprintf(line,sizeof(line),"Town Portal: the %s picture read back blank (every pixel %016llx); portals will show only their swirl",what,(unsigned long long)first);
+    greeneye::Host()->log(line);
+}
 // The home snapshot cache (portal_snapshot_cache.h): a capture of the player's own altar to
 // read back and save, and one loaded from disk to upload. Same native transfers as sharing.
 struct HomeTransfer {
@@ -169,6 +183,7 @@ void SharedGpuTick() {
         auto& job=g_download;
         if(!g_composite->snapshots[job.slot].valid||g_composite->snapshots[job.slot].tick!=job.tick)g_download={};
         else if(job.row==kSnapshotHeight){
+            LogIfBlank(*job.image,"home");
             homecache::Save(job.home,std::move(job.image));
             greeneye::Host()->log("Town Portal: home snapshot read back; saving it for the next login");
             g_download={};
@@ -178,7 +193,7 @@ void SharedGpuTick() {
         auto& job=g_download;
         if(job.image->epoch!=sharing::Epoch()||!sharing::Current(job.image->key)||
            !g_composite->snapshots[job.slot].valid||g_composite->snapshots[job.slot].tick!=job.tick)g_download={};
-        else if(job.row==kSnapshotHeight&&sharing::Submit(job.image)){
+        else if(job.row==kSnapshotHeight&&(LogIfBlank(*job.image,"shared"),sharing::Submit(job.image))){
             greeneye::Host()->log("Town Portal sharing: snapshot readback complete; queued lossless encoding");
             ++gpu.downloaded;g_exportedTicks[job.image->key.side]=job.tick;g_download={};
         }

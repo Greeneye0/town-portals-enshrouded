@@ -28,7 +28,8 @@ def main():
         shutil.copytree(biomes, os.path.join(DEST_DIR, "biomes"))
     # The loading-screen map (tools/map/make_map.py).
     os.makedirs(os.path.join(DEST_DIR, "map"), exist_ok=True)
-    for name in ("map.jpg", "map-en.jpg", "backdrop.jpg", "altar.png", "altar-base.png", "altar-flame.png"):
+    lettered = sorted(n for n in os.listdir(os.path.join(HERE, "assets", "map")) if n.startswith("map-") and n.endswith(".jpg"))
+    for name in ("map.jpg", *lettered, "backdrop.jpg", "altar.png", "altar-base.png", "altar-flame.png"):
         shutil.copy2(os.path.join(HERE, "assets", "map", name), os.path.join(DEST_DIR, "map", name))
     print(f"Deployed {MOD_ID}.dll, mod.json, voice lines, default pictures and map -> {DEST_DIR}")
     return 0

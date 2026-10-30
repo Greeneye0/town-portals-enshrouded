@@ -581,7 +581,13 @@ void BuildFrames() {
 // The loading screen's map (greeneye\town-portal\map\map.jpg, tools/map/make_map.py; labels drawn on it) and
 // its markers: loaded once, on the first trip; -1 when the file is missing (the swirl is shown).
 std::atomic<int> g_mapState{0};
-std::vector<uint32_t> g_mapPixels, g_mapEnPixels; // labels drawn on it; English: its own lettering
+std::vector<uint32_t> g_mapPixels; // labels drawn on it
+// The map lettered in the game's language (map\map-<code>.jpg: English the painting as supplied, the
+// others relettered by tools/map/letter_map.py), loaded when the language changes; without one the
+// labels are drawn on the blank map.
+std::vector<uint32_t> g_mapLetteredPixels;
+int g_mapLetteredLanguage = -1;
+uint32_t g_mapLetteredGeneration = 0;
 std::vector<uint32_t> g_mapLabeledPixels; // g_mapPixels with the labels written in (BakeMapLabels)
 // The backdrop round the map (tools/map/make_backdrop.py): the game's menus' navy with ring arcs.
 std::vector<uint32_t> g_backdropPixels;
@@ -619,13 +625,8 @@ void LoadMap() {
     g_mapSize = w;
     {
         wchar_t* file = wcsrchr(path, L'\\');
-        wcscpy_s(file + 1, MAX_PATH - (file + 1 - path), L"map-en.jpg");
         std::vector<uint8_t> en;
         uint32_t ew = 0, eh = 0;
-        if (defaults::LoadRgba(path, ew, eh, en) && ew == w && eh == h) {
-            g_mapEnPixels.resize(size_t(w) * h);
-            std::memcpy(g_mapEnPixels.data(), en.data(), en.size());
-        }
         wcscpy_s(file + 1, MAX_PATH - (file + 1 - path), L"backdrop.jpg");
         if (defaults::LoadRgba(path, ew, eh, en) && ew <= 2048 && eh <= 2048) {
             g_backdropPixels.resize(size_t(ew) * eh);
@@ -729,13 +730,32 @@ uint32_t FrameTexture(int index) {
     return id;
 }
 
-// A loading-map texture by its sub-key (1 map, 10 it labelled, 11 the backdrop, 8 the English map, 9 a soft disc, 2 dot, 3 ring, 4 altar, 5 its
+// map\map-<code>.jpg for the language, the same size as map.jpg; false when there is none.
+bool LoadLetteredMap(text::Lang language) {
+    g_mapLetteredLanguage = int(language);
+    g_mapLetteredPixels.clear();
+    ++g_mapLetteredGeneration;
+    wchar_t path[MAX_PATH]{}, file[32]{};
+    GetModuleFileNameW(nullptr, path, MAX_PATH);
+    if (auto* slash = wcsrchr(path, L'\\')) slash[1] = 0;
+    std::swprintf(file, std::size(file), L"map-%hs.jpg", text::kCodes[size_t(language)]);
+    wcscat_s(path, L"greeneye\\town-portal\\map\\");
+    wcscat_s(path, file);
+    std::vector<uint8_t> rgba;
+    uint32_t w = 0, h = 0;
+    if (!defaults::LoadRgba(path, w, h, rgba) || w != g_mapSize || h != g_mapSize) return false;
+    g_mapLetteredPixels.resize(size_t(w) * h);
+    std::memcpy(g_mapLetteredPixels.data(), rgba.data(), rgba.size());
+    return true;
+}
+
+// A loading-map texture by its sub-key (1 map, 10 it labelled, 11 the backdrop, 8 the lettered map, 9 a soft disc, 2 dot, 3 ring, 4 altar, 5 its
 // base, 6 its flame, 7 the portal oval's rim, 16.. its mist frames), refreshed like FrameTexture.
 uint32_t MapTexture(uint64_t sub) {
     void* repo = AssetRepo();
     if (g_mapState.load() != 1 || !repo || !g_createDynamicTexture) return 0;
     const bool oval = sub == 7 || (sub >= 16 && sub < 16 + kMistFrames);
-    const auto& pixels = sub == 11 ? g_backdropPixels : sub == 10 ? g_mapLabeledPixels : sub == 1 ? g_mapPixels : sub == 8 ? g_mapEnPixels : sub == 9 ? g_discPixels : sub == 2 ? g_dotPixels : sub == 3 ? g_ringPixels :
+    const auto& pixels = sub == 11 ? g_backdropPixels : sub == 10 ? g_mapLabeledPixels : sub == 1 ? g_mapPixels : sub == 8 ? g_mapLetteredPixels : sub == 9 ? g_discPixels : sub == 2 ? g_dotPixels : sub == 3 ? g_ringPixels :
                          sub == 4 ? g_altarPixels : sub == 5 ? g_altarBasePixels : sub == 6 ? g_altarFlamePixels :
                          sub == 7 ? g_ovalRimPixels : g_mistPixels[(sub - 16) % kMistFrames];
     const uint32_t dim = sub == 1 || sub == 8 || sub == 10 ? g_mapSize : sub == 9 ? kDotDim : sub >= 4 ? g_altarDim : kDotDim;
@@ -745,7 +765,8 @@ uint32_t MapTexture(uint64_t sub) {
     desc.byteSize = uint32_t(pixels.size() * sizeof(uint32_t));
     desc.keyLo = 0x544f574e504f5254ull;
     desc.keyHi = 0x4d41504d41503031ull ^ g_textureGeneration; // "MAPMAP01"
-    desc.keySub = sub == 10 ? sub | uint64_t(g_mapLabeledGeneration) << 8 : sub; // relabelled: a new texture
+    // Relabelled or another language's map: a new texture.
+    desc.keySub = sub == 10 ? sub | uint64_t(g_mapLabeledGeneration) << 8 : sub == 8 ? sub | uint64_t(g_mapLetteredGeneration) << 8 : sub;
     desc.width = oval ? kOvalW : sub == 11 ? g_backdropW : dim;
     desc.height = oval ? kOvalH : sub == 11 ? g_backdropH : dim;
     desc.format = 0x25;
@@ -894,11 +915,13 @@ bool DrawLoadingMap(void* widget, float ox, float oy, float sw, float sh, float 
         std::lock_guard guard(g_loadingMutex);
         route = g_loadingRoute;
     }
-    // English: the painting as supplied, with its own lettering; otherwise the blank one, labelled.
-    const uint32_t english = route.set && Language() == text::Lang::en ? MapTexture(8) : 0;
-    if (route.set && !english && g_mapState.load() == 1 && (RefreshMapLabels(now) || g_mapLabeledPixels.empty())) BakeMapLabels();
-    const uint32_t labelled = route.set && !english && !g_mapLabeledPixels.empty() ? MapTexture(10) : 0;
-    const uint32_t map = english ? english : labelled ? labelled : route.set ? MapTexture(1) : 0;
+    // The map lettered in the game's language when there is one; otherwise the blank one, labelled.
+    const text::Lang language = Language();
+    if (route.set && g_mapState.load() == 1 && g_mapLetteredLanguage != int(language)) LoadLetteredMap(language);
+    const uint32_t lettered = route.set && !g_mapLetteredPixels.empty() ? MapTexture(8) : 0;
+    if (route.set && !lettered && g_mapState.load() == 1 && (RefreshMapLabels(now) || g_mapLabeledPixels.empty())) BakeMapLabels();
+    const uint32_t labelled = route.set && !lettered && !g_mapLabeledPixels.empty() ? MapTexture(10) : 0;
+    const uint32_t map = lettered ? lettered : labelled ? labelled : route.set ? MapTexture(1) : 0;
     if (!map) return false;
     double fu, fv, au, av;
     mapwarp::ToMap(route.fieldX, route.fieldZ, fu, fv);
