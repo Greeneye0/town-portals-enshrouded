@@ -55,6 +55,10 @@ void* g_lastWorld = nullptr;
 
 bool g_paused = false;
 bool g_tWasDown = false;
+// Holding the cast key this long closes the player's own portal (a tap opens one).
+constexpr uint64_t kHoldToCloseMs = 1000;
+uint64_t g_tHeldSince = 0;
+bool g_tHoldDone = false;
 bool g_eWasDown = false;
 uint64_t g_lastTeleportTick = 0;
 uint64_t g_lastBroadcastTick = 0;
@@ -159,12 +163,14 @@ bool IsGameFocused() {
     return pid == GetCurrentProcessId();
 }
 
-// While the portal's travel prompt shows, E is the portal's alone: the game would also use the
+// While the portal's travel prompt shows, the interact key (E, or what the player bound the
+// game's Interact to: portal_bindings.h) is the portal's alone: the game would also use the
 // press on whatever else is in reach (a grapple point, the altar, a workbench). The game reads
-// keys as raw input (WM_INPUT); a message hook on its window thread turns E's key-down into
+// keys as raw input (WM_INPUT); a message hook on its window thread turns the key-down into
 // WM_NULL there. Town Portal itself reads the key with GetAsyncKeyState, which still sees it.
 // Releases pass, so no key sticks. Removed in HotPrepare before this generation unloads.
 std::atomic<uint64_t> g_portalPromptUntil{0};
+std::atomic<int> g_interactVk[2]{{'E'}, {0}};
 HHOOK g_keyHook = nullptr;
 LRESULT CALLBACK PortalKeyHook(int code, WPARAM wp, LPARAM lp) {
     greeneye::Lease lease;
@@ -174,7 +180,8 @@ LRESULT CALLBACK PortalKeyHook(int code, WPARAM wp, LPARAM lp) {
             RAWINPUT input{};
             UINT size = sizeof(input);
             if (GetRawInputData(reinterpret_cast<HRAWINPUT>(msg->lParam), RID_INPUT, &input, &size, sizeof(RAWINPUTHEADER)) != UINT(-1) &&
-                input.header.dwType == RIM_TYPEKEYBOARD && input.data.keyboard.VKey == 'E' &&
+                input.header.dwType == RIM_TYPEKEYBOARD && input.data.keyboard.VKey &&
+                (input.data.keyboard.VKey == g_interactVk[0].load() || input.data.keyboard.VKey == g_interactVk[1].load()) &&
                 !(input.data.keyboard.Flags & RI_KEY_BREAK))
                 msg->message = WM_NULL;
         }
@@ -188,8 +195,8 @@ void InstallKeyHook() {
     const DWORD thread = window ? GetWindowThreadProcessId(window, &pid) : 0;
     if (!thread || pid != GetCurrentProcessId()) return;
     g_keyHook = SetWindowsHookExW(WH_GETMESSAGE, PortalKeyHook, nullptr, thread);
-    Log(g_keyHook ? "Town Portal: E is kept from other interactions while the portal prompt shows"
-                  : "Town Portal: key hook unavailable; E may also reach nearby objects at a portal");
+    Log(g_keyHook ? "Town Portal: the interact key is kept from other interactions while the portal prompt shows"
+                  : "Town Portal: key hook unavailable; the interact key may also reach nearby objects at a portal");
 }
 void RemoveKeyHook() {
     if (g_keyHook) UnhookWindowsHookEx(g_keyHook);
@@ -207,6 +214,35 @@ bool IsTextInputActive() {
 
 bool KeyDown(int vk) {
     return (GetAsyncKeyState(vk) & 0x8000) != 0;
+}
+
+// The interact keys in force (portal::rules::InteractKeys), published for the key hook and
+// logged when they change. True when one of them is held.
+bool InteractKeyDown() {
+    const auto keys = portal::rules::InteractKeys();
+    static int logged[2]{-1, -1};
+    if (keys.vk[0] != logged[0] || keys.vk[1] != logged[1]) {
+        logged[0] = keys.vk[0];
+        logged[1] = keys.vk[1];
+        g_interactVk[0] = keys.vk[0] >= 8 ? keys.vk[0] : 0; // mouse buttons (1-6) are not keyboard input
+        g_interactVk[1] = keys.vk[1] >= 8 ? keys.vk[1] : 0;
+        char names[2][32]{};
+        for (int k = 0; k < keys.count; ++k) {
+            UINT scan = MapVirtualKeyW(UINT(keys.vk[k]), MAPVK_VK_TO_VSC) << 16;
+            if (keys.vk[k] < 8 || !GetKeyNameTextA(LONG(scan), names[k], sizeof(names[k])))
+                std::snprintf(names[k], sizeof(names[k]), "key 0x%02X", keys.vk[k]);
+        }
+        char line[160]{};
+        if (!keys.count)
+            std::snprintf(line, sizeof(line), "Town Portal: the game's Interact is bound to something other than a key; portals answer to the gamepad only (set InteractKey in town-portal.ini)");
+        else
+            std::snprintf(line, sizeof(line), "Town Portal: portals use %s%s%s (%s)", names[0], keys.count > 1 ? " or " : "", keys.count > 1 ? names[1] : "",
+                          keys.custom ? "the Interact key" : "the game's default Interact key");
+        Log(line);
+    }
+    for (int k = 0; k < keys.count; ++k)
+        if (KeyDown(keys.vk[k])) return true;
+    return false;
 }
 
 // A gamepad's Y, the button the portal prompt shows for the game's interact, through XInput
@@ -776,6 +812,33 @@ void CheckChannel(void* gameClient, float px, float py, float pz) {
     g_castUntil = 0;
     g_channel = {};
     Log("Town Portal: channel aborted");
+}
+
+// Holding the cast key: this player's portal closes for everyone, with the fizzle of a cancelled
+// cast (a portal still forming is cancelled the same way). A notice says so, or that there is none.
+void CloseOwnPortal(void* gameClient) {
+    const uint64_t account = portal::travel::LocalSteamAccount();
+    portal::PortalInstance own{};
+    const auto lang = portal::render::Language();
+    if (!portal::travel::GetPortalByOwner(account, own) || own.closing) {
+        portal::render::ShowNotice("Town Portal", portal::text::Get(lang, portal::text::NoOpenPortal), 2500);
+        Log("Town Portal: cast key held, but there is no open portal to close");
+        return;
+    }
+    if (g_channel.portalId == own.portalId) {
+        portal::casting::Cancel();
+        portal::casting::UnlockMovement();
+        portal::render::CancelChannelSound();
+        portal::sceneprobe::SetCast(0, 0, 0, 0, 0);
+        g_castUntil = 0;
+        g_channel = {};
+    }
+    if (g_pendingClose.portalId == own.portalId) g_pendingClose = {};
+    portal::travel::ClosePortalByOwner(account, own.portalId);
+    BroadcastPortalClose(gameClient, own.portalId, account);
+    portal::render::PlayFizzle(GameSoundGain());
+    portal::render::ShowNotice("Town Portal", portal::text::Get(lang, portal::text::PortalClosed), 2500);
+    Log("Town Portal: portal closed by holding the cast key");
 }
 
 // Base portal placement. Every player's base portal stands around the same Flame Altar, so a
@@ -1701,13 +1764,24 @@ void RunGameplayTick(void* app, std::vector<portal::PortalInstance>& outPortals,
     bool canAcceptHotkeys = inPlayHud && focused && !textActive && !travelling;
     if (focused) InstallKeyHook();
 
-    // The cast key (OpenPortalKey in town-portal.ini, T by default).
+    // The cast key (OpenPortalKey in town-portal.ini, T by default): a tap opens a portal when
+    // the key comes up; held for kHoldToCloseMs it closes this player's open portal instead.
     bool tDown = canAcceptHotkeys && KeyDown(portal::rules::OpenPortalKey()) &&
                  !KeyDown(VK_CONTROL) && !KeyDown(VK_MENU) && !KeyDown(VK_SHIFT);
-    bool tPressed = tDown && !g_tWasDown;
+    bool tPressed = false;
+    {
+        const uint64_t nowMs = GetTickCount64();
+        if (tDown && !g_tWasDown) { g_tHeldSince = nowMs; g_tHoldDone = false; }
+        if (tDown && !g_tHoldDone && nowMs - g_tHeldSince >= kHoldToCloseMs) {
+            g_tHoldDone = true;
+            CloseOwnPortal(gameClient);
+        }
+        if (!tDown && g_tWasDown && !g_tHoldDone) tPressed = canAcceptHotkeys; // released after a tap
+        if (!canAcceptHotkeys) g_tHoldDone = true; // a menu or travel cut the press short: nothing
+    }
     g_tWasDown = tDown;
 
-    bool ePhysical = KeyDown('E') || PadInteractDown();
+    bool ePhysical = InteractKeyDown() || PadInteractDown();
     bool eDown = canAcceptHotkeys && ePhysical &&
                  !KeyDown(VK_CONTROL) && !KeyDown(VK_MENU);
     bool ePressed = eDown && !g_eWasDown;
@@ -1846,6 +1920,19 @@ void RunGameplayTick(void* app, std::vector<portal::PortalInstance>& outPortals,
         if (n > 0 && size_t(n) < promptCap) std::snprintf(outPrompt + n, promptCap - n, "  /  %s", place);
     } else
         std::snprintf(outPrompt, promptCap, portal::text::Get(portal::render::Language(), prompt), destination);
+    // The owner's own portal gets a second row: the cast key, held, closes it. Sent to the
+    // renderer after a \x1f as "<key cap>\x1f<text>".
+    if (isOwner) {
+        const int vk = portal::rules::OpenPortalKey();
+        char cap[24]{};
+        if ((vk >= 'A' && vk <= 'Z') || (vk >= '0' && vk <= '9')) cap[0] = char(vk);
+        else if (!GetKeyNameTextA(LONG(MapVirtualKeyW(UINT(vk), MAPVK_VK_TO_VSC) << 16), cap, sizeof(cap)))
+            cap[0] = '?';
+        const size_t used = std::strlen(outPrompt);
+        if (used < promptCap)
+            std::snprintf(outPrompt + used, promptCap - used, "\x1f%s\x1f%s", cap,
+                          portal::text::Get(portal::render::Language(), portal::text::HoldToClose));
+    }
     g_portalPromptUntil = GetTickCount64() + 250; // E belongs to the portal while this shows
     g_promptAnchor[0] = nearestEnd.wx + nearestEnd.rx * 1.25f;
     g_promptAnchor[1] = nearestEnd.wy + 1.3f;
@@ -1876,7 +1963,7 @@ void RunGameplayTick(void* app, std::vector<portal::PortalInstance>& outPortals,
 
 std::vector<portal::PortalInstance> g_framePortals;
 float g_framePx = 0.0f, g_framePy = 0.0f, g_framePz = 0.0f;
-char g_framePrompt[160]{};
+char g_framePrompt[320]{};
 
 // Where a gameplay-tick exception came from: the code address as an offset into this DLL
 // (look it up in bin\town-portal.map or with the .pdb) and, for an access violation, the
@@ -2081,27 +2168,48 @@ extern "C" __declspec(dllexport) int TownPortalDevControl(
 // The PC's graphics adapters and their video memory, for bug reports (portal pictures depend on
 // the GPU keeping them). DXGI is loaded only for this, so the build gains no link dependency.
 void LogGraphicsAdapters() {
-    HMODULE dxgi = LoadLibraryW(L"dxgi.dll");
-    if (!dxgi) return;
-    using CreateFactory = HRESULT(WINAPI*)(REFIID, void**);
-    auto create = reinterpret_cast<CreateFactory>(GetProcAddress(dxgi, "CreateDXGIFactory1"));
-    IDXGIFactory1* factory = nullptr;
-    if (create && SUCCEEDED(create(__uuidof(IDXGIFactory1), reinterpret_cast<void**>(&factory)))) {
-        IDXGIAdapter1* adapter = nullptr;
-        for (UINT i = 0; factory->EnumAdapters1(i, &adapter) != DXGI_ERROR_NOT_FOUND; ++i) {
-            DXGI_ADAPTER_DESC1 desc{};
-            if (SUCCEEDED(adapter->GetDesc1(&desc)) && !(desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)) {
-                char name[128]{}, line[224]{};
-                WideCharToMultiByte(CP_UTF8, 0, desc.Description, -1, name, sizeof(name), nullptr, nullptr);
-                std::snprintf(line, sizeof(line), "Town Portal: graphics adapter %s (%llu MB video memory)", name,
-                              (unsigned long long)(desc.DedicatedVideoMemory >> 20));
-                Log(line);
+    int logged = 0;
+    const char* why = "dxgi.dll not found";
+    if (HMODULE dxgi = LoadLibraryW(L"dxgi.dll")) {
+        using CreateFactory = HRESULT(WINAPI*)(REFIID, void**);
+        auto create = reinterpret_cast<CreateFactory>(GetProcAddress(dxgi, "CreateDXGIFactory1"));
+        IDXGIFactory1* factory = nullptr;
+        why = "no DXGI factory";
+        if (create && SUCCEEDED(create(__uuidof(IDXGIFactory1), reinterpret_cast<void**>(&factory)))) {
+            why = "no adapters listed";
+            IDXGIAdapter1* adapter = nullptr;
+            for (UINT i = 0; i < 8 && factory->EnumAdapters1(i, &adapter) != DXGI_ERROR_NOT_FOUND; ++i) {
+                DXGI_ADAPTER_DESC1 desc{};
+                if (SUCCEEDED(adapter->GetDesc1(&desc)) && !(desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)) {
+                    char name[128]{}, line[224]{};
+                    WideCharToMultiByte(CP_UTF8, 0, desc.Description, -1, name, sizeof(name), nullptr, nullptr);
+                    std::snprintf(line, sizeof(line), "Town Portal: graphics adapter %s (%llu MB video memory)", name,
+                                  (unsigned long long)(desc.DedicatedVideoMemory >> 20));
+                    Log(line);
+                    ++logged;
+                }
+                adapter->Release();
             }
-            adapter->Release();
+            factory->Release();
         }
-        factory->Release();
+        FreeLibrary(dxgi);
     }
-    FreeLibrary(dxgi);
+    if (logged) return;
+    // DXGI said nothing (seen on one Windows 10 PC): the display devices Windows knows instead.
+    DISPLAY_DEVICEA device{};
+    device.cb = sizeof(device);
+    for (DWORD i = 0; i < 8 && EnumDisplayDevicesA(nullptr, i, &device, 0); ++i, device.cb = sizeof(device)) {
+        if (!(device.StateFlags & DISPLAY_DEVICE_ATTACHED_TO_DESKTOP) || !device.DeviceString[0]) continue;
+        char line[224]{};
+        std::snprintf(line, sizeof(line), "Town Portal: graphics adapter %s (%s)", device.DeviceString, why);
+        Log(line);
+        ++logged;
+    }
+    if (!logged) {
+        char line[96]{};
+        std::snprintf(line, sizeof(line), "Town Portal: graphics adapter unknown (%s)", why);
+        Log(line);
+    }
 }
 
 GREENEYE_MOD_START {
@@ -2135,7 +2243,7 @@ GREENEYE_MOD_START {
     }
 
     if (serverSide) {
-        Log("Town Portals 1.0.3: server companion loaded");
+        Log("Town Portals 1.0.4: server companion loaded");
         return true;
     }
 
@@ -2198,7 +2306,7 @@ GREENEYE_MOD_START {
     portal::casting::Init(host);
     LogGraphicsAdapters();
 
-    Log("Town Portals 1.0.3: press T (OpenPortalKey in town-portal.ini) to open a portal to your Preferred Spawn Flame Altar");
+    Log("Town Portals 1.0.4: press T (OpenPortalKey in town-portal.ini) to open a portal to your Preferred Spawn Flame Altar");
     return true;
 }
 

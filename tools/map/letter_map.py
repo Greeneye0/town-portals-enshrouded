@@ -173,6 +173,7 @@ def main():
     inliers = ' + '.join(str(i) for _, i, _ in sources)
     texture = os.path.join(MAP, f'map-{code}.jpg')
     Image.fromarray(out).resize((SIZE, SIZE), Image.LANCZOS).save(texture, quality=90, optimize=True, subsampling=0)
+    Image.fromarray(out).save(os.path.join(OUT, f'map-{code}-full.png'))  # full size, for the listing images
     # Check sheet: each scroll, English | new, at 2x.
     rows = []
     for name, (x0, y0, x1, y1) in boxes.items():

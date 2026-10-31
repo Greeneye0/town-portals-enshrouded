@@ -1,4 +1,4 @@
-Town Portals 1.0.3 for Enshrouded
+Town Portals 1.0.4 for Enshrouded
 Saving your ass since 2026.
 
 Open a portal home from anywhere. Press T: after a short cast, a portal opens in front
@@ -9,8 +9,11 @@ HOW IT WORKS
 - Press T (OpenPortalKey in town-portal.ini) to cast. The cast takes 3 seconds and you
   cannot move during it; press Jump to cancel. The portal forms in front of you, and its
   twin forms beside your preferred Flame Altar.
-- Walk up to either end and press E to travel. While the portal's prompt shows, E is the
-  portal's only: a grapple point, workbench or altar next to it will not react too.
+- Hold T for a second to close your portal (a portal still forming is cancelled). Your
+  own portal's prompt shows this too.
+- Walk up to either end and press E to travel (or the key you gave Interact in the game's
+  controls). While the portal's prompt shows, that key is the portal's only: a grapple
+  point, workbench or altar next to it will not react too.
 - Each player has one portal. Opening a new one replaces your old one.
 - Other players can use your portal (the prompt says it is shared). Everyone in the world
   needs Town Portals; on a dedicated server, the server needs it too (server/).
@@ -33,6 +36,7 @@ WHEN PORTALS CLOSE
 - Coming back from your altar closes it behind you. If other players are in the world it
   stays open 15 seconds first, so they can follow you.
 - With DisableAutoClose=true (server setting) it stays open until you open a new one.
+- Holding T for a second closes it whenever you like.
 - Jumping during the cast cancels the portal.
 - Portals do not last past leaving the world.
 
@@ -68,7 +72,7 @@ Dedicated server (server admin only)
    On a rented server, upload the same files next to enshrouded_server.exe with the
    host's file manager (if it lets you add DLL files).
 
-Check: greeneye\loader.log has a line with "Town Portals 1.0.3" (the server's says
+Check: greeneye\loader.log has a line with "Town Portals 1.0.4" (the server's says
 "server companion loaded").
 Uninstall: delete greeneye\town-portal (and dbgcore.dll if no other Greeneye mod uses
 it), in the game folder and on the server.
@@ -78,6 +82,7 @@ SETTINGS: greeneye\town-portal\town-portal.ini (written on first start)
   AllowInShroud=true, AllowInHollowHalls=true, DisableAutoClose=false
 [Controls] (each player's own)
   OpenPortalKey=T        a letter, F1-F24, Mouse4, Mouse5, ... or a key code like 0x54
+  InteractKey=Auto       the key that uses a portal: Auto follows the game's Interact key
   VoiceFeedback=true
   PortalQuality=Auto     Auto, Low or High
 Picture sharing: delete greeneye\town-portal\share-snapshots.enabled to turn it off.
@@ -90,7 +95,8 @@ KNOWN LIMITATIONS
   from aside or close up, and stretched spots behind objects the snapshot could not see.
 - The world map is a painting: the portals' places on it are approximate.
 - The loading percentage is an estimate from the trip's stages, not the game's own count.
-- Only the keyboard's E is kept from other objects at the prompt, not a gamepad's button.
+- Only the keyboard's Interact key is kept from other objects at the prompt, not a
+  gamepad's button.
 - Large pictures take a moment to reach other players.
 
 TROUBLESHOOTING / BUG REPORTS

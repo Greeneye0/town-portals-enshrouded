@@ -37,6 +37,18 @@ def load(name, erase=()):
     return ImageEnhance.Color(out).enhance(1.05).convert('RGBA')
 
 
+
+def sky_fill(im, box, pad=6):
+    """A name over plain sky, replaced by the sky beside it: each row of the box takes the
+    colours just left and right of it, blended across (sky is a smooth gradient)."""
+    a = np.asarray(im).astype(np.float32).copy()
+    x0, y0, x1, y1 = box
+    left = a[y0:y1, x0 - pad:x0].mean(axis=1)
+    right = a[y0:y1, x1:x1 + pad].mean(axis=1)
+    t = np.linspace(0, 1, x1 - x0)[None, :, None]
+    a[y0:y1, x0:x1] = left[:, None] * (1 - t) + right[:, None] * t
+    return Image.fromarray(a.round().astype(np.uint8))
+
 def callout(im, x, y, title, sub, target=None, size=40, width=None, anchor_side=None):
     """Box at (x, y) with a title and sub line; a dashed gold line and arrow to target."""
     over = Image.new('RGBA', im.size, (0, 0, 0, 0))
@@ -98,12 +110,12 @@ print('header-1300x372.jpg (1300, 372)')
 # 01 the banner, as it is.
 save(Image.open(os.path.join(SRC, 'banner-dungeon-escape.png')).convert('RGBA'), '01-banner.jpg')
 
-# 02 a portal home, from the sky ruins: your altar seen through it, the travel prompt.
-im = load('chat119.png', erase=[(770, 108, 985, 172)]).crop((40, 100, 2000, 1090))
-callout(im, 1060, 60, 'Your Flame Altar, right through it',
-        'the portal shows where it leads, with depth as you move', target=(890, 290), size=40)
-callout(im, 1060, 560, 'Press E to travel home', 'it names your altar and where it stands',
-        target=(975, 565), size=40)
+# 02 a portal home from a mountain peak: your altar's fire through it, the travel prompt (1.0.3).
+im = sky_fill(load('chat135-peak-portal.png'), (1255, 334, 1460, 381)).crop((0, 132, 2311, 1300))
+callout(im, 1560, 300, 'Your Flame Altar, right through it',
+        'the portal shows where it leads, with depth as you move', target=(1335, 420), size=40)
+callout(im, 1560, 820, 'Press E to travel home', 'it names your altar and where it stands',
+        target=(1300, 572), size=40)
 wordmark(im)
 save(im, '02-portal-home.jpg', 2000)
 
@@ -117,9 +129,12 @@ callout(im, 20, 680, 'Your Flame Altar', "where you'll arrive", target=(912, 775
 callout(im, 1490, 900, 'Loading progress', 'shown as you travel', target=(1092, 1010), size=34)
 save(im, '03-travel-map.jpg', 2000)
 
-# 03b the same part of the map in English (the painting as made) and in Thai (drawn by the mod).
-english = load('chat120.png').crop((414, 494, 995, 1174))
-thai = load('chat117.png').crop((544, 251, 1248, 1074))
+# 03b the same part of the map in English (the painting as made) and in Thai (assets/map/map-th.jpg at
+# full size: tools/map/letter_map.py writes it to tools/map/out/map-th-full.png).
+MAP = os.path.join(HERE, '..', 'assets', 'map')
+box = (213, 414, 815, 1166)
+english = Image.open(os.path.join(MAP, 'map-source-en.png')).convert('RGBA').crop(box)
+thai = Image.open(os.path.join(HERE, 'map', 'out', 'map-th-full.png')).convert('RGBA').crop(box)
 h = 1000
 english = english.resize((round(english.width * h / english.height), h), Image.LANCZOS)
 thai = thai.resize((round(thai.width * h / thai.height), h), Image.LANCZOS)
@@ -135,24 +150,31 @@ d.text((32, 80), 'the map as painted', font=font(False, 28), fill=TXT)
 x = english.width + gap + 30
 d.text((x, 22), 'Thai', font=font(True, 52), fill=HOT)
 d.text((x + d.textlength('Thai', font=font(True, 52)) + 24, 24), 'ภาษาไทย', font=thai_font, fill=HOT)
-d.text((x + 2, 80), "labels written in the game's language, in all 15", font=font(False, 28), fill=TXT)
+d.text((x + 2, 80), "lettered in the game's language, in all 15", font=font(False, 28), fill=TXT)
 save(im, '03b-map-languages.jpg', 2000)
 
 # 04 before the first trip: a landmark of the region in the altar's portal (1.0.1 capture at the
 # altar; the quest markers of the villagers behind the wall are painted out).
 markers = [(228, 331), (468, 313), (868, 385), (675, 497), (1084, 529)]
-im = load('chat129-default-picture.png', erase=[(x - 40, y - 46, x + 40, y + 46) for x, y in markers]).crop((0, 115, 2185, 1300))
+im = load('chat129-default-picture.png', erase=[(x - 40, y - 46, x + 40, y + 46) for x, y in markers] + [(743, 151, 911, 188)]).crop((0, 115, 2185, 1300))
 callout(im, 1240, 50, 'Before your first trip there', 'a landmark of that region, by day or by night',
         target=(860, 380), size=44)
 callout(im, 70, 820, 'Closes behind you', 'when you return through it', target=(655, 640), size=40)
 save(im, '04-default-picture.jpg', 2000)
 
-# 05 home from anywhere: a portal over lava, the prompt in the game's language.
-im = load('chat114.png', erase=[(520, 110, 710, 152)]).crop((0, 90, 1450, 1300))
-callout(im, 820, 120, 'Home from anywhere', 'one portal per player, opened with T', target=(640, 420), size=44)
-callout(im, 820, 880, 'Every text in 15 languages', 'Thai here', target=(700, 590), size=40)
+# 05 the altar's twin: beside the Flame Altar at home, showing the peak the portal was opened on.
+im = load('chat136-altar-portal.png', erase=[(958, 155, 1128, 192)]).crop((560, 180, 2690, 1300))
+callout(im, 1180, 70, 'And back again', 'the twin by your altar shows the peak you left',
+        target=(330, 300), size=44)
+callout(im, 1180, 860, 'Walk through to return', 'right where you opened it, mid-adventure', target=(560, 640), size=40)
 wordmark(im)
-save(im, '05-anywhere.jpg', 1600)
+save(im, '05-anywhere.jpg', 2000)
 
 # 06 the second banner.
 save(Image.open(os.path.join(SRC, 'banner-panic-run.png')).convert('RGBA'), '06-banner-panic-run.jpg')
+
+# 07 the escape: a skeleton horde in a crypt chasing the player to the portal home (1.0.3, FSR3).
+im = load('chat132-dungeon-escape.png', erase=[(1662, 543, 1848, 580)]).crop((725, 130, 2787, 1290))
+callout(im, 60, 110, 'When the dungeon turns on you', 'your way home is already open', target=(930, 560), size=44)
+callout(im, 60, 880, "Press E and you're gone", 'the horde stays behind', target=(950, 735), size=40)
+save(im, '07-dungeon-escape.jpg', 2000)

@@ -11,6 +11,7 @@
 #include <string_view>
 #include <cwchar>
 #include <cwctype>
+#include "portal_bindings.h"
 
 namespace portal::rules {
 
@@ -57,7 +58,11 @@ inline constexpr const char* kControlsSection =
     "; The key that opens your portal: a letter or digit, F1-F24, Num0-Num9, Insert, Delete,\n"
     "; Home, End, PageUp, PageDown, Tab, Space, Enter, Up, Down, Left, Right, Mouse4, Mouse5,\n"
     "; MiddleMouse, a punctuation key such as ; or ], or a key code such as 0x54. Default T.\n"
+    "; Tap it to open a portal; hold it for a second to close your open portal.\n"
     "OpenPortalKey=T\n"
+    "; The key that uses a portal: Auto follows the game's own Interact binding (E unless you\n"
+    "; changed it in the game's controls), or a key as for OpenPortalKey.\n"
+    "InteractKey=Auto\n"
     "; Your character speaks when a portal can't be opened: true or false.\n"
     "VoiceFeedback=true\n"
     "; Portal effects: Auto follows the game's graphics settings (lighter on Low and Medium),\n"
@@ -69,6 +74,10 @@ inline constexpr const char* kControlsSection =
 inline constexpr const char* kVoiceKey =
     "; Your character speaks when a portal can't be opened: true or false.\n"
     "VoiceFeedback=true\n";
+inline constexpr const char* kInteractKey =
+    "; The key that uses a portal: Auto follows the game's own Interact binding (E unless you\n"
+    "; changed it in the game's controls), or a key as for OpenPortalKey.\n"
+    "InteractKey=Auto\n";
 inline constexpr const char* kQualityKey =
     "; Portal effects: Auto follows the game's graphics settings (lighter on Low and Medium),\n"
     "; Low always draws the lighter portals, High always the full ones.\n"
@@ -83,7 +92,8 @@ inline void WriteControlsDefaults() {
     GetPrivateProfileStringW(L"Controls", L"OpenPortalKey", L"\x1", value, 32, path.c_str());
     if (value[0] != L'\x1') {
         // [Controls] is there; add the keys that came later.
-        for (auto [key, text] : {std::pair{L"VoiceFeedback", kVoiceKey}, std::pair{L"PortalQuality", kQualityKey}}) {
+        for (auto [key, text] : {std::pair{L"VoiceFeedback", kVoiceKey}, std::pair{L"PortalQuality", kQualityKey},
+                                 std::pair{L"InteractKey", kInteractKey}}) {
             GetPrivateProfileStringW(L"Controls", key, L"\x1", value, 32, path.c_str());
             if (value[0] == L'\x1')
                 if (FILE* f = _wfopen(path.c_str(), L"a")) {
@@ -163,6 +173,22 @@ inline int OpenPortalKey() {
     const int parsed = ParseKey(value);
     key = parsed ? parsed : 'T';
     return key;
+}
+
+// The keys that use a portal: InteractKey in the .ini, or with Auto (the default) the game's own
+// Interact binding (portal_bindings.h). Read again at most once a second.
+inline bindings::Keys InteractKeys() {
+    static int fixed = 0;
+    static uint64_t readAt = 0;
+    const uint64_t now = GetTickCount64();
+    if (!readAt || now - readAt > 1000) {
+        readAt = now;
+        wchar_t value[32]{};
+        GetPrivateProfileStringW(L"Controls", L"InteractKey", L"Auto", value, 32, Path().c_str());
+        fixed = _wcsicmp(value, L"Auto") ? ParseKey(value) : 0;
+    }
+    if (fixed) return {{fixed, 0}, 1, true};
+    return bindings::GameInteractKeys();
 }
 
 inline Rules ReadFile() {

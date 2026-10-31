@@ -16,6 +16,8 @@ inline constexpr const char* kCodes[]={"en","fr","it","de","es","ja","ko","pl","
 enum Id { StillChecking, ServerMissing, ChannelCancelled, Travelling, ClosesSoon, TravelTo, ReturnTo, SharedTo, TravellingTo, OpeningPlace, YourAltar, NoRoom, NoPortalShroud, NoPortalHere,
           Nag5, Nag10, Nag15, // Nag*: the 5th, 10th and 15th refusal in a row (tools/voice/set/lines_nag.tsv)
           LoadingPercent,     // the loading screen's progress, printf with the percent (0-100)
+          PortalClosed, NoOpenPortal, // holding the cast key closes your portal
+          HoldToClose,        // the prompt row under your own portal's prompt
           IdCount };
 
 inline constexpr const char* kTexts[size_t(Lang::count)][IdCount]={
@@ -37,7 +39,10 @@ inline constexpr const char* kTexts[size_t(Lang::count)][IdCount]={
  "You keep asking. The answer is the same: no portal.",
  "Yup, that's the portal button. You keep pressing it. Here's your gold star.",
  "This is why you're single, isn't it?",
- "Loading… %d%%"},
+ "Loading… %d%%",
+ "Portal closed.",
+ "You have no open portal.",
+ "Hold: Close your portal"},
 // fr
 {"Vérification en cours : ce serveur utilise-t-il Town Portal ? Réessayez dans quelques secondes.",
  "Ce serveur n'utilise pas Town Portal : les portails ne sont pas disponibles ici. Le mod doit aussi être installé sur le serveur.",
@@ -56,7 +61,10 @@ inline constexpr const char* kTexts[size_t(Lang::count)][IdCount]={
  "Tu insistes, mais la réponse reste la même : pas de portail.",
  "Oui, c'est bien le bouton du portail. Tu n'arrêtes pas d'appuyer dessus. Tiens, voilà ton bon point.",
  "C'est pour ça que tu es célibataire, hein ?",
- "Chargement… %d %%"},
+ "Chargement… %d %%",
+ "Portail fermé.",
+ "Vous n'avez aucun portail ouvert.",
+ "Maintenir : fermer votre portail"},
 // it
 {"Verifica in corso: questo server usa Town Portal? Riprova tra qualche secondo.",
  "Questo server non usa Town Portal, quindi i portali non sono disponibili qui. Anche il server deve avere la mod installata.",
@@ -75,7 +83,10 @@ inline constexpr const char* kTexts[size_t(Lang::count)][IdCount]={
  "Continui a chiedere. La risposta è sempre la stessa: niente portale.",
  "Sì, quello è il tasto del portale. Continui a premerlo. Ecco la tua stellina d'oro.",
  "È per questo che sei single, vero?",
- "Caricamento… %d%%"},
+ "Caricamento… %d%%",
+ "Portale chiuso.",
+ "Non hai nessun portale aperto.",
+ "Tieni premuto: chiudi il portale"},
 // de
 {"Es wird noch geprüft, ob dieser Server Town Portal verwendet. Versuche es in ein paar Sekunden erneut.",
  "Dieser Server verwendet Town Portal nicht, daher sind Portale hier nicht verfügbar. Die Mod muss auch auf dem Server installiert sein.",
@@ -94,7 +105,10 @@ inline constexpr const char* kTexts[size_t(Lang::count)][IdCount]={
  "Du fragst immer wieder. Die Antwort bleibt dieselbe: kein Portal.",
  "Jep, das ist der Portalknopf. Du drückst ihn immer wieder. Hier, dein Fleißsternchen.",
  "Deshalb bist du Single, oder?",
- "Wird geladen … %d %%"},
+ "Wird geladen … %d %%",
+ "Portal geschlossen.",
+ "Du hast kein offenes Portal.",
+ "Halten: Portal schließen"},
 // es
 {"Comprobando si este servidor usa Town Portal. Inténtalo de nuevo en unos segundos.",
  "Este servidor no usa Town Portal, así que los portales no están disponibles aquí. El servidor también necesita tener el mod instalado.",
@@ -113,7 +127,10 @@ inline constexpr const char* kTexts[size_t(Lang::count)][IdCount]={
  "Sigues preguntando. La respuesta es la misma: no hay portal.",
  "Sí, ese es el botón del portal. No paras de pulsarlo. Toma tu estrellita dorada.",
  "Por esto no tienes pareja, ¿verdad?",
- "Cargando… %d %%"},
+ "Cargando… %d %%",
+ "Portal cerrado.",
+ "No tienes ningún portal abierto.",
+ "Mantener: cerrar tu portal"},
 // ja
 {"このサーバーでTown Portalが動作しているか確認中です。数秒後にもう一度お試しください。",
  "このサーバーではTown Portalが動作していないため、ここではポータルを使用できません。サーバーにもMODのインストールが必要です。",
@@ -132,7 +149,10 @@ inline constexpr const char* kTexts[size_t(Lang::count)][IdCount]={
  "何度頼んでも答えは同じ。ポータルは無理。",
  "うん、それがポータルのボタンだよ。押し続けてるね。はい、金色の星をどうぞ。",
  "だから恋人がいないんじゃない？",
- "読み込み中… %d%%"},
+ "読み込み中… %d%%",
+ "ポータルを閉じました。",
+ "開いているポータルはありません。",
+ "長押し：ポータルを閉じる"},
 // ko
 {"이 서버에서 Town Portal을 사용하는지 확인하는 중입니다. 몇 초 후에 다시 시도하세요.",
  "이 서버는 Town Portal을 사용하지 않으므로 여기서는 포털을 사용할 수 없습니다. 서버에도 모드가 설치되어 있어야 합니다.",
@@ -151,7 +171,10 @@ inline constexpr const char* kTexts[size_t(Lang::count)][IdCount]={
  "계속 물어봐도 대답은 같아. 포털은 안 돼.",
  "그래, 그게 포털 버튼이야. 계속 누르네. 자, 칭찬 스티커.",
  "이래서 애인이 없는 거지?",
- "불러오는 중… %d%%"},
+ "불러오는 중… %d%%",
+ "포털을 닫았습니다.",
+ "열려 있는 포털이 없습니다.",
+ "길게 누르기: 포털 닫기"},
 // pl
 {"Trwa sprawdzanie, czy ten serwer używa Town Portal. Spróbuj ponownie za kilka sekund.",
  "Ten serwer nie używa Town Portal, więc portale są tu niedostępne. Mod musi być zainstalowany także na serwerze.",
@@ -170,7 +193,10 @@ inline constexpr const char* kTexts[size_t(Lang::count)][IdCount]={
  "Ciągle pytasz. Odpowiedź jest ta sama: żadnego portalu.",
  "Tak, to przycisk portalu. Ciągle go wciskasz. Masz tu złotą gwiazdkę.",
  "To dlatego nikt się z tobą nie umawia, prawda?",
- "Wczytywanie… %d%%"},
+ "Wczytywanie… %d%%",
+ "Portal zamknięty.",
+ "Nie masz otwartego portalu.",
+ "Przytrzymaj: zamknij portal"},
 // pt
 {"Verificando se este servidor usa o Town Portal. Tente novamente em alguns segundos.",
  "Este servidor não usa o Town Portal, então os portais não estão disponíveis aqui. O servidor também precisa ter o mod instalado.",
@@ -189,7 +215,10 @@ inline constexpr const char* kTexts[size_t(Lang::count)][IdCount]={
  "Você continua pedindo. A resposta é a mesma: nada de portal.",
  "Sim, esse é o botão do portal. Você não para de apertar. Aqui está sua estrelinha dourada.",
  "É por isso que ninguém te namora, né?",
- "Carregando… %d%%"},
+ "Carregando… %d%%",
+ "Portal fechado.",
+ "Você não tem nenhum portal aberto.",
+ "Segurar: fechar seu portal"},
 // ru
 {"Проверяем, установлен ли на этом сервере Town Portal. Повторите попытку через несколько секунд.",
  "На этом сервере не установлен Town Portal, поэтому порталы здесь недоступны. Мод должен быть установлен и на сервере.",
@@ -208,7 +237,10 @@ inline constexpr const char* kTexts[size_t(Lang::count)][IdCount]={
  "Ты всё спрашиваешь. Ответ тот же: портала не будет.",
  "Да, это кнопка портала. Ты всё жмёшь и жмёшь. Держи золотую звёздочку.",
  "Вот поэтому у тебя и нет пары, да?",
- "Загрузка… %d%%"},
+ "Загрузка… %d%%",
+ "Портал закрыт.",
+ "У вас нет открытого портала.",
+ "Удерживать: закрыть портал"},
 // zh-hans
 {"正在检查此服务器是否运行 Town Portal。请几秒后再试。",
  "此服务器未运行 Town Portal，因此无法在此使用传送门。服务器也需要安装此模组。",
@@ -227,7 +259,10 @@ inline constexpr const char* kTexts[size_t(Lang::count)][IdCount]={
  "你一直问，答案还是一样：没有传送门。",
  "对，那就是传送门按钮。你一直在按。给你一朵小红花。",
  "这就是你单身的原因吧？",
- "加载中… %d%%"},
+ "加载中… %d%%",
+ "传送门已关闭。",
+ "你没有已开启的传送门。",
+ "长按：关闭传送门"},
 // zh-hant
 {"正在檢查此伺服器是否執行 Town Portal。請幾秒後再試。",
  "此伺服器未執行 Town Portal，因此無法在此使用傳送門。伺服器也需要安裝此模組。",
@@ -246,7 +281,10 @@ inline constexpr const char* kTexts[size_t(Lang::count)][IdCount]={
  "你一直問，答案還是一樣：沒有傳送門。",
  "對，那就是傳送門按鈕。你一直在按。給你一朵小紅花。",
  "這就是你單身的原因吧？",
- "載入中… %d%%"},
+ "載入中… %d%%",
+ "傳送門已關閉。",
+ "你沒有已開啟的傳送門。",
+ "長按：關閉傳送門"},
 // tr
 {"Bu sunucunun Town Portal kullanıp kullanmadığı hâlâ kontrol ediliyor. Birkaç saniye sonra tekrar dene.",
  "Bu sunucu Town Portal kullanmıyor, bu yüzden portallar burada kullanılamaz. Modun sunucuda da kurulu olması gerekir.",
@@ -265,7 +303,10 @@ inline constexpr const char* kTexts[size_t(Lang::count)][IdCount]={
  "Sormaya devam ediyorsun. Cevap aynı: portal yok.",
  "Evet, portal tuşu bu. Basıp duruyorsun. Al bakalım, altın yıldızın.",
  "Bu yüzden sevgilin yok, değil mi?",
- "Yükleniyor… %%%d"},
+ "Yükleniyor… %%%d",
+ "Portal kapatıldı.",
+ "Açık bir portalın yok.",
+ "Basılı tut: portalı kapat"},
 // uk
 {"Перевіряємо, чи встановлено на цьому сервері Town Portal. Спробуйте ще раз за кілька секунд.",
  "На цьому сервері не встановлено Town Portal, тому портали тут недоступні. Мод має бути встановлений і на сервері.",
@@ -284,7 +325,10 @@ inline constexpr const char* kTexts[size_t(Lang::count)][IdCount]={
  "Ти все питаєш. Відповідь та сама: порталу не буде.",
  "Так, це кнопка порталу. Ти все тиснеш і тиснеш. Ось тобі золота зірочка.",
  "Ось чому в тебе немає пари, так?",
- "Завантаження… %d%%"},
+ "Завантаження… %d%%",
+ "Портал закрито.",
+ "У вас немає відкритого порталу.",
+ "Утримувати: закрити портал"},
 // th
 {"กำลังตรวจสอบว่าเซิร์ฟเวอร์นี้ใช้ Town Portal หรือไม่ โปรดลองอีกครั้งในอีกไม่กี่วินาที",
  "เซิร์ฟเวอร์นี้ไม่ได้ใช้ Town Portal จึงใช้พอร์ทัลที่นี่ไม่ได้ เซิร์ฟเวอร์ต้องติดตั้งม็อดนี้ด้วย",
@@ -303,7 +347,10 @@ inline constexpr const char* kTexts[size_t(Lang::count)][IdCount]={
  "ถามอีกกี่ครั้งคำตอบก็เหมือนเดิม ไม่มีประตูมิติ",
  "ใช่ นั่นแหละปุ่มประตูมิติ กดอยู่นั่นแหละ เอ้า รับดาวทองไปเลย",
  "นี่แหละเหตุผลที่ยังโสดอยู่ใช่ไหม",
- "กำลังโหลด… %d%%"},
+ "กำลังโหลด… %d%%",
+ "ปิดพอร์ทัลแล้ว",
+ "คุณไม่มีพอร์ทัลที่เปิดอยู่",
+ "กดค้าง: ปิดพอร์ทัล"},
 };
 
 inline const char* Get(Lang lang,Id id) {

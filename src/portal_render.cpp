@@ -97,6 +97,14 @@ using HintStyleInitFn = void* (*)(void* style, bool enabled);
 HintRowFn g_hintRow = nullptr;
 HintStyleInitFn g_hintStyleInit = nullptr;
 constexpr uint8_t kInteractAction = 15;
+// The row drawer under DrawActionHintRow (evidence: C:\temp\enshrouded-re\hint-q*-out.txt):
+// it takes an action binding (0xc4 bytes) instead of an action. Keyboard primary and secondary
+// combinations at +0 and +0x30, each an operation of 12 bytes (type at +0, 1 = Key with the
+// USB HID usage at +2) then up to three modifiers; modality and toggle at +0x60/+0x61;
+// gamepad at +0x62 and +0x92. Lets the mod's own keys (the cast key) get the game's key cap.
+using BindingRowFn = uint8_t (*)(const void* binding, void* style);
+BindingRowFn g_bindingRow = nullptr;
+constexpr size_t kBindingSize = 0xc4;
 BeginLayerFn g_beginLayer = nullptr;
 EndLayerFn g_endLayer = nullptr;
 NamedWidgetFn g_named = nullptr;
@@ -1223,11 +1231,12 @@ void DrawEndpoint(void* widget, const CameraFrame& cam, const Candidate& candida
 // InputHintStyle (0x78 bytes): +0x2F auto label (off), +0x3C fade, +0x4C skips the hold-ring
 // path, +0x54 key size in px (the game's prompt uses 32), +0x58 the label. The row is drawn in
 // its own widget anchored at the point.
-bool DrawNativePrompt(float x, float y, const char* label) {
-    if (!g_hintRow || !g_hintStyleInit || !g_named || !g_end) return false;
+// hidKey: 0 for the game's interact action, else a key's USB HID usage drawn as a key cap.
+bool DrawNativePrompt(float x, float y, const char* label, uint16_t hidKey = 0) {
+    if (!(hidKey ? (void*)g_bindingRow : (void*)g_hintRow) || !g_hintStyleInit || !g_named || !g_end) return false;
     __try {
         Widget box;
-        UiText name = MakeText("townPortalInteraction");
+        UiText name = MakeText(hidKey ? "townPortalHoldClose" : "townPortalInteraction");
         g_named(box.raw, &name);
         if (uint8_t* node = box.Handle()) {
             *reinterpret_cast<uint16_t*>(node + 0x6e) = 0x0101;
@@ -1241,13 +1250,33 @@ bool DrawNativePrompt(float x, float y, const char* label) {
         *reinterpret_cast<float*>(style + 0x3c) = 1.0f;
         *reinterpret_cast<float*>(style + 0x54) = 32.0f;
         *reinterpret_cast<UiText*>(style + 0x58) = MakeText(label);
-        g_hintRow(kInteractAction, style);
+        if (hidKey) {
+            alignas(16) uint8_t binding[kBindingSize]{};
+            binding[0] = 1; // Key
+            std::memcpy(binding + 2, &hidKey, sizeof(hidKey));
+            g_bindingRow(binding, style);
+        } else
+            g_hintRow(kInteractAction, style);
         g_end(box.raw);
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
-        g_hintRow = nullptr; // fall back to the mod's own prompt from now on
+        // fall back to the mod's own prompt from now on
+        if (hidKey) g_bindingRow = nullptr;
+        else g_hintRow = nullptr;
         return false;
     }
+}
+
+// A key cap's text ("T", "5", "F4") as a USB HID usage; 0 for keys without one here.
+uint16_t HidFromCap(const std::string& cap) {
+    if (cap.size() == 1 && cap[0] >= 'A' && cap[0] <= 'Z') return uint16_t(0x04 + cap[0] - 'A');
+    if (cap.size() == 1 && cap[0] >= '1' && cap[0] <= '9') return uint16_t(0x1e + cap[0] - '1');
+    if (cap == "0") return 0x27;
+    if (cap.size() >= 2 && cap.size() <= 3 && cap[0] == 'F') {
+        const int n = std::atoi(cap.c_str() + 1);
+        if (n >= 1 && n <= 12) return uint16_t(0x3a + n - 1);
+    }
+    return 0;
 }
 
 struct PromptAnchor { float x = 0, y = 0, z = 0; bool valid = false; };
@@ -1264,6 +1293,30 @@ void PromptPosition(const CameraFrame& cam, float& sx, float& sy) {
         sy=std::clamp(sy,oy+60,oy+sh-120);
     }
 }
+
+// A prompt's parts: "first  /  second" and, after a \x1f, the hold row "<key cap>\x1f<text>"
+// (the owner's "hold T: close your portal").
+struct PromptParts {
+    std::string first,second,holdCap,holdText;
+    explicit PromptParts(const char* prompt) : first(prompt) {
+        if (size_t hold=first.find('\x1f'); hold!=std::string::npos) {
+            holdCap=first.substr(hold+1);
+            first.resize(hold);
+            if (size_t cut=holdCap.find('\x1f'); cut!=std::string::npos) {
+                holdText=holdCap.substr(cut+1);
+                holdCap.resize(cut);
+            }
+        }
+        if (size_t cut=first.find("  /  "); cut!=std::string::npos) {
+            second=first.substr(cut+5);
+            first.resize(cut);
+        }
+    }
+    // The hold row's centre, under the prompt (and under its second line when it has one).
+    float HoldY(float sy) const { return sy+(second.empty()?44.0f:80.0f); }
+    float HoldCapWidth() const { return std::max(30.0f,11.0f*float(holdCap.size())+12.0f); }
+};
+constexpr float kHoldCap = 30;
 
 uint8_t* g_uiClient=nullptr;
 
@@ -1373,10 +1426,13 @@ void DrawFrameBody(Widget& widget, const CameraFrame& cam, const std::vector<Por
     }
     // The prompt's key cap. Text is drawn before images within a layer, so the cap goes on
     // this lower layer and the HUD layer's letter sits on top of it.
-    if (prompt&&*prompt&&LoadingAlpha(now)<=0.0f&&!g_hintRow) {
+    if (prompt&&*prompt&&LoadingAlpha(now)<=0.0f) {
         float sx{},sy{};
         PromptPosition(cam,sx,sy);
-        DrawSolidRect(widget.raw,sx,sy-kKeyCap*0.5f,kKeyCap,kKeyCap,0xfff4f1edu,1.0f);
+        if (!g_hintRow) DrawSolidRect(widget.raw,sx,sy-kKeyCap*0.5f,kKeyCap,kKeyCap,0xfff4f1edu,1.0f);
+        const PromptParts parts(prompt);
+        if (!parts.holdCap.empty()&&!(g_bindingRow&&g_hintRow&&HidFromCap(parts.holdCap)))
+            DrawNineSliceBox(widget.raw,kAssetRoundedBox,sx+1,parts.HoldY(sy)-kHoldCap*0.5f,parts.HoldCapWidth(),kHoldCap,0xfff4f1edu,1.0f,6,1.15f); // the box image is greyish
     }
     return;
   }
@@ -1435,12 +1491,10 @@ void DrawFrameBody(Widget& widget, const CameraFrame& cam, const std::vector<Por
         float sx{},sy{};
         PromptPosition(cam,sx,sy);
         // A prompt with a second part ("Return to X  /  Closes your portal") shows that part on
-        // its own line under the first.
-        std::string first(prompt), second;
-        if (size_t cut=first.find("  /  "); cut!=std::string::npos) {
-            second=first.substr(cut+5);
-            first.resize(cut);
-        }
+        // its own line under the first; a hold row goes under both.
+        const PromptParts parts(prompt);
+        const std::string& first=parts.first;
+        const std::string& second=parts.second;
         uint8_t* assets=Assets();
         if (DrawNativePrompt(sx,sy,first.c_str())) {
             // Drawn by the game's own prompt code.
@@ -1451,6 +1505,15 @@ void DrawFrameBody(Widget& widget, const CameraFrame& cam, const std::vector<Por
         }
         if (!second.empty()&&assets)
             DrawLabel(sx+kKeyCap+12,sy+28,900,40,second.c_str(),0xffd8d2c8u,0.9f,0,PromptStyle(assets));
+        // The hold row: the game's own key cap when it has the key, as for E.
+        if (!parts.holdCap.empty()&&g_hintRow&&HidFromCap(parts.holdCap)&&
+            DrawNativePrompt(sx,parts.HoldY(sy),parts.holdText.c_str(),HidFromCap(parts.holdCap))) {
+        } else if (!parts.holdCap.empty()&&assets) {
+            const float hy=parts.HoldY(sy);
+            // The prompt's own (outlined) style in the cap's dark: a bold letter like the game's E.
+            DrawLabel(sx+1,hy-kHoldCap*0.5f,parts.HoldCapWidth(),kHoldCap,parts.holdCap.c_str(),0xff1a1612u,1.0f,2,PromptStyle(assets));
+            DrawLabel(sx+kKeyCap+12,hy-20,900,40,parts.holdText.c_str(),0xffffffffu,0.9f,0,PromptStyle(assets));
+        }
 
     }
     if (noticeBody&&*noticeBody&&LoadingAlpha(now)<=0.0f) { // never over the loading screen
@@ -1530,6 +1593,9 @@ bool Init(const GreeneyeHost* host, void** uiRoot) {
     g_hintStyleInit = reinterpret_cast<HintStyleInitFn>(host->find(
         "48 83 EC 28 45 33 C0 48 C7 41 2D 00 00 01 00 44 88 41 06", nullptr));
     if (host->log && !(g_hintRow && g_hintStyleInit)) host->log("Town Portal: game prompt drawing not found; using the mod's own");
+    g_bindingRow = reinterpret_cast<BindingRowFn>(host->find(
+        "40 55 56 57 48 8D AC 24 E0 FC FF FF 48 81 EC 20 04 00 00 44 8B 0A 48 8B FA 4C 8B C1", nullptr));
+    if (host->log && !g_bindingRow) host->log("Town Portal: game key-cap drawing not found; the hold row uses the mod's own");
     g_createDynamicTexture = reinterpret_cast<CreateDynamicTextureFn>(host->find(
         "40 53 56 57 41 56 41 57 48 81 EC F0 00 00 00 48 83 7A 18 00 48 8B F2 48 8B F9", nullptr));
 

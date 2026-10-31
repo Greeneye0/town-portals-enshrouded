@@ -87,7 +87,15 @@ bin\test_map_warp.exe
 if errorlevel 1 exit /b 1
 cl /nologo /std:c++20 /O2 /EHsc /MT /W4 tests\test_quality.cpp /Fo:build\ /Fe:bin\test_quality.exe
 if errorlevel 1 exit /b 1
+cl /nologo /std:c++20 /O2 /EHsc /MT /W4 tests\test_bindings.cpp /Fo:build\ /Fe:bin\test_bindings.exe
+if errorlevel 1 exit /b 1
+bin\test_bindings.exe
+if errorlevel 1 exit /b 1
 bin\test_quality.exe
+if errorlevel 1 exit /b 1
+cl /nologo /std:c++20 /O2 /EHsc /MT /W4 tests\test_bindings.cpp /Fo:build\ /Fe:bin\test_bindings.exe
+if errorlevel 1 exit /b 1
+bin\test_bindings.exe
 if errorlevel 1 exit /b 1
 cl /nologo /std:c++20 /O2 /EHsc /MT /W4 tests\test_prompt_view.cpp /Fo:build\ /Fe:bin\test_prompt_view.exe
 if errorlevel 1 exit /b 1
