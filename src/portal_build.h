@@ -8,7 +8,7 @@ namespace portal::build {
 // Whether this process runs the game build a fixed layout was taken from: the same link
 // time stamp, and the same image, or the same image with Steam's DRM wrapper (the trailing
 // .bind section) stripped off, as Steamless does. Stripping leaves the code byte for byte
-// the same and only shortens the image (the client's 0x2a1e000 to 0x29e4000, where .bind
+// the same and only shortens the image (the client's 0x2a40000 to 0x2a06000, where .bind
 // began), so a stripped exe passes when it has no .bind and is not larger.
 inline bool Matches(uint32_t stamp, uint32_t size) {
     auto* exe = reinterpret_cast<const uint8_t*>(GetModuleHandleW(nullptr));
@@ -21,7 +21,7 @@ inline bool Matches(uint32_t stamp, uint32_t size) {
         if (std::memcmp(section[i].Name, ".bind", 6) == 0) return false;
     return true;
 }
-constexpr uint32_t kClientStamp = 0x6ad77f0c, kClientSize = 0x2a1e000;
-constexpr uint32_t kServerStamp = 0x6ad77f14, kServerSize = 0x1dd1000;
+constexpr uint32_t kClientStamp = 0x6ae4601e, kClientSize = 0x2a40000;
+constexpr uint32_t kServerStamp = 0x6ae46022, kServerSize = 0x1dde000;
 inline bool Client() { return Matches(kClientStamp, kClientSize); }
 }

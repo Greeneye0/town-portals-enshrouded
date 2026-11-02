@@ -113,7 +113,7 @@ void CompositeReleaseObject(void*& object) {
     EnterCriticalSection(lock);
     if(--At<uint16_t>(object,0)==0){
         auto* pending=At<uint8_t*>(graphics,0x580);
-        Native<void(*)(void*,void**)>(0xfe9510)(pending?pending+0x20:graphics+0x510,&object);
+        Native<void(*)(void*,void**)>(0x1002c40)(pending?pending+0x20:graphics+0x510,&object);
     }
     LeaveCriticalSection(lock);object=nullptr;
 }
@@ -130,7 +130,7 @@ void CompositeRelease() {
         g_release(At<void*>(reinterpret_cast<void*>(g_target->root),0x160),&g_composite->snapshotTicket);
     CompositeReleaseObject(g_composite->layout);
     if(g_composite->bindings&&g_composite->graphics)
-        Native<void(*)(void*,void**)>(0xfcf2c0)(g_composite->graphics,&g_composite->bindings);
+        Native<void(*)(void*,void**)>(0xfe8680)(g_composite->graphics,&g_composite->bindings);
     *g_composite={};
 }
 bool CompositePipelines(void* device);
@@ -147,7 +147,7 @@ bool CompositeCreate() {
     alignas(8) uint8_t entries[3][16]{};
     for(int i=0;i<3;++i){entries[i][1]=i==2?1:3;At<uint16_t>(entries[i],2)=2;}
     NativeSpan span{entries,3};
-    c.bindings=Native<void*(*)(void*,const NativeSpan*)>(0xfbc3d0)(c.graphics,&span);
+    c.bindings=Native<void*(*)(void*,const NativeSpan*)>(0xfd5440)(c.graphics,&span);
     if(!c.bindings){c.error=1;return false;}
     c.stage=2;
     alignas(8) uint8_t layout[0x30]{};
@@ -159,7 +159,7 @@ bool CompositeCreate() {
     // frame: anti-aliasing jitter x, y and 1 when drawn into the game's scene colour. Then at
     // 1-4 the snapshot's rows and info, at 5 the cast effect (hand in portal metres, effect).
     const uint8_t attributes[]={0,1,6,3,7,1,8,3,9,3,10,3,11,3,12,3,13,3,1,3,2,3,3,3,4,3,5,3};span={attributes,14};
-    c.vertices=Native<void*(*)(void*,const NativeSpan*)>(0xfcbed0)(c.graphics,&span);
+    c.vertices=Native<void*(*)(void*,const NativeSpan*)>(0xfe53d0)(c.graphics,&span);
     if(!c.vertices||At<uint8_t>(c.vertices,0x22)!=kVertexFloats*4){c.error=3;return false;}
     c.stage=3;
     if(!CompositePipelines(device))return false;
@@ -240,7 +240,7 @@ void CompositeRefreshPipelines() {
 uint8_t* CompositeCommand(void* pass,uint8_t opcode,uint16_t size) {
     auto* commands=At<uint8_t*>(pass,0x10);auto* block=At<uint8_t*>(commands,0x28);
     if(At<uint64_t>(block,0x10)-At<uint64_t>(block,8)<size){
-        auto* next=Native<uint8_t*(*)(void*)>(0xfad470)(At<void*>(commands,0));
+        auto* next=Native<uint8_t*(*)(void*)>(0xfc60d0)(At<void*>(commands,0));
         At<void*>(block,0)=next;At<void*>(commands,0x28)=next;block=next;
     }
     auto* out=At<uint8_t*>(block,8);At<uint8_t*>(block,8)+=size;++At<uint64_t>(block,0x18);
@@ -332,9 +332,14 @@ int FindSnapshot(const PortalEndpoint& end) {
 // In frame: the game's scene colour, every endpoint blended over it, each with the snapshot
 // of where it leads (invExposure: the frame's 1/exposure; 0 shows none). A snapshot shows as
 // it looked when taken: its colour is already exposed for that frame. (Scaling by its exposure
-// over this frame's made a night snapshot seen by day ~18x too bright, 2026-10-28.)
+// over this frame's made a night snapshot seen by day ~18x too bright, 2026-10-28, and a sunny
+// base seen from a cellar ~30x too dark, 2026-10-31.) A far end darker than here is lifted a
+// little, by the square root of how much darker, at most 4x, so a cellar seen from a sunny base
+// is dim rather than black; never darkened. lightOnly: only the portals' glow on the ground,
+// for the frame a snapshot is taken from (it hides the portals, and without their light a
+// dark spot such as a sewer came out black, 2026-10-31).
 void CompositeRecord(void* pass,void* state,const ImageView& depth,bool inFrame,
-                     const CompositeSlot* slots,uint32_t count,uint64_t now,float invExposure=0) {
+                     const CompositeSlot* slots,uint32_t count,uint64_t now,float invExposure=0,bool lightOnly=false) {
     auto& c=*g_composite;
     float vertices[kCompositeSlots][3*kVertexFloats]{};bool drawn[kCompositeSlots]{};
     const Snapshot* snapshot[kCompositeSlots]{};
@@ -356,10 +361,10 @@ void CompositeRecord(void* pass,void* state,const ImageView& depth,bool inFrame,
         const Snapshot* shown=snapshot[i];
         const bool casting=inFrame&&slot.field&&g_cast.effect>0&&g_cast.portalId==p.portalId&&!p.closing;
         drawn[i]=CompositeCoordinates(state,slot.field?p.fieldEnd:p.baseEnd,live,form,slot.tint,inFrame,
-                                      shown,destination,shown?1.f:0.f,
+                                      shown,destination,shown?std::clamp(std::sqrt(shown->exposure*invExposure),1.f,4.f):0.f,
                                       casting?&g_cast:nullptr,vertices[i]);
     }
-    Native<void(*)(void*,uint64_t)>(0x47770)(pass,0x7ffffffff);
+    Native<void(*)(void*,uint64_t)>(0x47a70)(pass,0x7ffffffff);
     auto* graph=At<uint8_t*>(pass,0);
     // Bindings: the destination image (live view or snapshot), the scene depth, the sampler.
     auto makeDescriptor=[&](const ImageView& destination){
@@ -367,7 +372,7 @@ void CompositeRecord(void* pass,void* state,const ImageView& depth,bool inFrame,
         for(int i=0;i<2;++i){bindings[i][0]=3;At<ImageView>(bindings[i],8)=i?depth:destination;bindings[i][0x18]=7;}
         bindings[2][0]=1;At<void*>(bindings[2],8)=At<void*>(reinterpret_cast<void*>(g_world->root),0x16e28);
         alignas(8) uint8_t set[0x20]{};set[0]=3;At<void*>(set,8)=c.bindings;At<void*>(set,0x10)=bindings;At<uint64_t>(set,0x18)=3;
-        return Native<void*(*)(void*,void*,const void*)>(0x1010700)(At<void*>(graph,0),At<void*>(graph,0x10),set);
+        return Native<void*(*)(void*,void*,const void*)>(0x102a570)(At<void*>(graph,0),At<void*>(graph,0x10),set);
     };
     void* shared=makeDescriptor(g_target->color);
     void* descriptor=shared;
@@ -385,6 +390,7 @@ void CompositeRecord(void* pass,void* state,const ImageView& depth,bool inFrame,
     for(uint32_t i=count;i-->0;){
         if(!drawn[i])continue;
         const bool lightPass=inFrame&&c.lightPipeline&&!low;
+        if(lightOnly&&!lightPass)continue;
         // In the frame each endpoint binds the snapshot of where it leads (the light pass
         // below rebinds, so the switch takes effect there).
         if(inFrame){
@@ -399,7 +405,7 @@ void CompositeRecord(void* pass,void* state,const ImageView& depth,bool inFrame,
         // In the game's frame: the light first (multiplying the scene), then the surface.
         if(lightPass){
             bind(c.lightPipeline);
-            if(auto* light=Native<float*(*)(void*,void*,int)>(0x146470)(pass,c.vertices,3)){
+            if(auto* light=Native<float*(*)(void*,void*,int)>(0x148980)(pass,c.vertices,3)){
                 std::memcpy(light,vertices[i],sizeof(vertices[i]));
                 for(int v=0;v<3;++v){
                     light[v*kVertexFloats+6]+=40.f;
@@ -407,18 +413,21 @@ void CompositeRecord(void* pass,void* state,const ImageView& depth,bool inFrame,
                     light[v*kVertexFloats+45]=g_groundLightGain;
                 }
             }
+            if(lightOnly)continue;
             bind(c.framePipeline);
         }
-        auto* mapped=Native<float*(*)(void*,void*,int)>(0x146470)(pass,c.vertices,3);
+        auto* mapped=Native<float*(*)(void*,void*,int)>(0x148980)(pass,c.vertices,3);
         if(!mapped)continue;
         std::memcpy(mapped,vertices[i],sizeof(vertices[i]));
         renderedPortal[renderedCount]=slots[i].portal.portalId;
         renderedField[renderedCount]=slots[i].field;++renderedCount;
     }
-    std::memcpy(c.renderedPortal,renderedPortal,sizeof(renderedPortal));
-    std::memcpy(c.renderedField,renderedField,sizeof(renderedField));
-    c.renderedCount=renderedCount;
-    Native<void(*)(void*)>(0x6c050)(pass);
+    if(!lightOnly){
+        std::memcpy(c.renderedPortal,renderedPortal,sizeof(renderedPortal));
+        std::memcpy(c.renderedField,renderedField,sizeof(renderedField));
+        c.renderedCount=renderedCount;
+    }
+    Native<void(*)(void*)>(0x6c890)(pass);
 }
 
 void CompositeRender(void* scene,void* context) {
@@ -433,17 +442,17 @@ void CompositeRender(void* scene,void* context) {
     // enabled. A fixed +120 samples the previous frame every other frame.
     // Use the same selector as the engine's transparent/lighting passes.
     ImageView depth{};
-    Native<ImageView*(*)(ImageView*,void*)>(0x123c50)(&depth,state);
+    Native<ImageView*(*)(ImageView*,void*)>(0x125e40)(&depth,state);
     alignas(16) uint8_t pass[0x1200]{};
     c.stage=5;
-    Native<void*(*)(void*,void*,const char*)>(0x100cee0)(pass,At<void*>(context,0x10),"portal depth composite");
+    Native<void*(*)(void*,void*,const char*)>(0x1026df0)(pass,At<void*>(context,0x10),"portal depth composite");
     uint64_t access=0x400;
-    Native<void(*)(void*,const void*,uint8_t,const uint64_t*)>(0x4cba0)(pass,&g_target->color,7,&access);
-    Native<void(*)(void*,const void*,uint8_t,const uint64_t*)>(0x4cba0)(pass,&depth,7,&access);
+    Native<void(*)(void*,const void*,uint8_t,const uint64_t*)>(0x4cf00)(pass,&g_target->color,7,&access);
+    Native<void(*)(void*,const void*,uint8_t,const uint64_t*)>(0x4cf00)(pass,&depth,7,&access);
     const uint8_t attachment[]={0,1,0};
-    Native<void(*)(void*,const void*,const void*,const char*)>(0x6ba30)(pass,&c.image,attachment,"portal depth composite");
+    Native<void(*)(void*,const void*,const void*,const char*)>(0x6c270)(pass,&c.image,attachment,"portal depth composite");
     CompositeRecord(pass,state,depth,false,slots,count,now);
-    Native<void(*)(void*)>(0x100d680)(pass);
+    Native<void(*)(void*)>(0x1027590)(pass);
     c.stage=6;++c.frames;c.tick=GetTickCount64();c.portal=slots[0].portal.portalId;c.field=slots[0].field;
 }
 void CompositeRenderGuard(void* scene,void* context) {

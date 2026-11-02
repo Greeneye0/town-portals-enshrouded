@@ -302,17 +302,17 @@ void* StateCreateHook(void* models,const void* description) {
     return g_stateCreate(models,description);
 }
 void* CreateRootWithSlots(void* result,void* allocator,void* description) {
-    uint32_t saved=At<uint32_t>(description,0x5c);
+    uint32_t saved=At<uint32_t>(description,0x64);
     // Alter the startup descriptor before any pools or scene-indexed systems
     // exist. Never resize or replace a live scene pool.
-    At<uint32_t>(description,0x5c)=std::max(saved,4u);
+    At<uint32_t>(description,0x64)=std::max(saved,4u);
     __try {return g_rootCreate(result,allocator,description);}
-    __finally {At<uint32_t>(description,0x5c)=saved;}
+    __finally {At<uint32_t>(description,0x64)=saved;}
 }
 void* RootCreateHook(void* result,void* allocator,void* description) {
     greeneye::Lease lease;
     if(!lease) return g_rootCreate(result,allocator,description);
-    uint32_t saved=At<uint32_t>(description,0x5c);
+    uint32_t saved=At<uint32_t>(description,0x64);
     void* returned=CreateRootWithSlots(result,allocator,description);
     if(!At<uint8_t>(result,0)) {
         std::lock_guard lock(g_lock);
@@ -1006,7 +1006,7 @@ void SnapshotCapture(void* scope,uint8_t* state,ImageView frame,const ImageView&
     frame=sceneColor;
     const auto info=InspectImage(frame);
     ImageView depth{};
-    Native<ImageView*(*)(ImageView*,void*)>(0x123c50)(&depth,state);
+    Native<ImageView*(*)(ImageView*,void*)>(0x125e40)(&depth,state);
     const auto depthInfo=InspectImage(depth);
     // The capture pairs exact colour/depth texels; a different-size image is
     // not the matching scene buffer and would bake displaced silhouettes.
@@ -1064,24 +1064,24 @@ void SnapshotCapture(void* scope,uint8_t* state,ImageView frame,const ImageView&
         std::memcpy(v+8,local,sizeof(local));std::memcpy(v+40,rows+8,4*sizeof(float));v[44]=cropX;v[45]=cropY;
     }
     uint64_t access=0x400;
-    Native<void(*)(void*,const void*,uint8_t,const uint64_t*)>(0x4cba0)(scope,&frame,7,&access);
-    Native<void(*)(void*,const void*,uint8_t,const uint64_t*)>(0x4cba0)(scope,&depth,7,&access);
+    Native<void(*)(void*,const void*,uint8_t,const uint64_t*)>(0x4cf00)(scope,&frame,7,&access);
+    Native<void(*)(void*,const void*,uint8_t,const uint64_t*)>(0x4cf00)(scope,&depth,7,&access);
     const uint8_t attachment[]={0,1,0};
-    Native<void(*)(void*,const void*,const void*,const char*)>(0x6ba30)(scope,&snapshot.image,attachment,"town portal snapshot");
-    Native<void(*)(void*,uint64_t)>(0x47770)(scope,0x7ffffffff);
+    Native<void(*)(void*,const void*,const void*,const char*)>(0x6c270)(scope,&snapshot.image,attachment,"town portal snapshot");
+    Native<void(*)(void*,uint64_t)>(0x47a70)(scope,0x7ffffffff);
     alignas(8) uint8_t bindings[3][0x28]{};
     for(int i=0;i<2;++i){bindings[i][0]=3;At<ImageView>(bindings[i],8)=i?depth:frame;bindings[i][0x18]=7;}
     bindings[2][0]=1;At<void*>(bindings[2],8)=At<void*>(reinterpret_cast<void*>(g_world->root),0x16e28);
     alignas(8) uint8_t set[0x20]{};set[0]=3;At<void*>(set,8)=c.bindings;At<void*>(set,0x10)=bindings;At<uint64_t>(set,0x18)=3;
     auto* graph=At<uint8_t*>(scope,0);
-    void* descriptor=Native<void*(*)(void*,void*,const void*)>(0x1010700)(At<void*>(graph,0),At<void*>(graph,0x10),set);
+    void* descriptor=Native<void*(*)(void*,void*,const void*)>(0x102a570)(At<void*>(graph,0),At<void*>(graph,0x10),set);
     auto* command=CompositeCommand(scope,5,0x10);At<void*>(command,8)=c.capturePipeline;
     command=CompositeCommand(scope,7,0x38);At<void*>(command,8)=c.layout;At<void*>(command,0x10)=descriptor;At<uint16_t>(command,0x30)=1;
     bool drawn=false;
-    if(auto* mapped=Native<float*(*)(void*,void*,int)>(0x146470)(scope,c.vertices,3)){
+    if(auto* mapped=Native<float*(*)(void*,void*,int)>(0x148980)(scope,c.vertices,3)){
         std::memcpy(mapped,vertices,sizeof(vertices));drawn=true;
     }
-    Native<void(*)(void*)>(0x6c050)(scope);
+    Native<void(*)(void*)>(0x6c890)(scope);
     if(!drawn)return;
     g_snapshotShroud[slot]=r.shroud;
     taken.image=snapshot.image;taken.cx=origin.x;taken.cy=origin.y;taken.cz=origin.z;
@@ -1108,7 +1108,7 @@ void SnapshotCaptureGuard(void* scope,uint8_t* state,const ImageView& frame,cons
 // colour at render resolution, just before the upscaler (FSR / DLSS) or the final
 // resolve, so the game anti-aliases its edges against characters, hair and grass like any
 // other scene content. Evidence: C:\temp\enshrouded-re\out\pre-taa (renderView call
-// 0x13b0dd to 0x118610: rcx renderView's recording scope, rdx state+0xf38, r8 the
+// 0x13d4db to 0x11a7a0: rcx renderView's recording scope, rdx state+0xf38, r8 the
 // upscaler inputs). On unless greeneye\town-portal\inframe.disabled exists; then portals
 // are drawn over the finished frame.
 using UpscaleFn=void* (*)(void*,uint8_t*,uint8_t*);
@@ -1144,7 +1144,7 @@ bool InFrameEnabled(uint64_t now) {
     }
     return enabled;
 }
-bool InFrameDraw(void* scope,uint8_t* state,uint8_t* inputs) {
+bool InFrameDraw(void* scope,uint8_t* state,uint8_t* inputs,bool lightOnly=false) {
     auto& c=*g_composite;
     if(!c.enabled||!c.framePipeline||c.error||!g_target||g_target->error||!g_world)return false;
     if(state!=WorldState())return false;
@@ -1158,30 +1158,31 @@ bool InFrameDraw(void* scope,uint8_t* state,uint8_t* inputs) {
     // swap every frame, and the upscaler's own depth entry is not always the current one.
     const ImageView color=At<ImageView>(inputs,0x10);
     ImageView depth{};
-    Native<ImageView*(*)(ImageView*,void*)>(0x123c50)(&depth,state);
+    Native<ImageView*(*)(ImageView*,void*)>(0x125e40)(&depth,state);
     const auto target=InspectImage(color),depthInfo=InspectImage(depth);
     if(!target.valid||target.format!=0x61||!depthInfo.valid||
        target.width!=depthInfo.width||target.height!=depthInfo.height){++c.inFrameSkip;return false;}
     uint64_t access=0x400;
-    Native<void(*)(void*,const void*,uint8_t,const uint64_t*)>(0x4cba0)(scope,&g_target->color,7,&access);
-    Native<void(*)(void*,const void*,uint8_t,const uint64_t*)>(0x4cba0)(scope,&depth,7,&access);
+    Native<void(*)(void*,const void*,uint8_t,const uint64_t*)>(0x4cf00)(scope,&g_target->color,7,&access);
+    Native<void(*)(void*,const void*,uint8_t,const uint64_t*)>(0x4cf00)(scope,&depth,7,&access);
     for(const auto& snapshot:c.snapshots)
-        if(snapshot.valid)Native<void(*)(void*,const void*,uint8_t,const uint64_t*)>(0x4cba0)(scope,&snapshot.image,7,&access);
+        if(snapshot.valid)Native<void(*)(void*,const void*,uint8_t,const uint64_t*)>(0x4cf00)(scope,&snapshot.image,7,&access);
     if(g_sharedGpu)for(const auto& v:g_sharedGpu->views)
         if(v.snapshot.valid&&v.epoch==sharing::Epoch())
-            Native<void(*)(void*,const void*,uint8_t,const uint64_t*)>(0x4cba0)(scope,&v.snapshot.image,7,&access);
+            Native<void(*)(void*,const void*,uint8_t,const uint64_t*)>(0x4cf00)(scope,&v.snapshot.image,7,&access);
     // Load and store: blend over what the scene drew.
     const uint8_t attachment[]={1,1,0};
-    Native<void(*)(void*,const void*,const void*,const char*)>(0x6ba30)(scope,&color,attachment,"town portal");
+    Native<void(*)(void*,const void*,const void*,const char*)>(0x6c270)(scope,&color,attachment,"town portal");
     // Snapshots are scaled from their exposure to this frame's (inputs +9c: 1/exposure).
     const float invExposure=At<float>(inputs,0x9c);
+    if(lightOnly){CompositeRecord(scope,state,depth,true,slots,count,now,0.f,true);return true;}
     CompositeRecord(scope,state,depth,true,slots,count,now,std::isfinite(invExposure)&&invExposure>0?invExposure:0.f);
     ++c.inFrameFrames;c.inFrameTick=now;c.tick=now;++c.frames;
     c.portal=slots[0].portal.portalId;c.field=slots[0].field;
     return true;
 }
-bool InFrameDrawGuard(void* scope,uint8_t* state,uint8_t* inputs) {
-    __try {return InFrameDraw(scope,state,inputs);}
+bool InFrameDrawGuard(void* scope,uint8_t* state,uint8_t* inputs,bool lightOnly=false) {
+    __try {return InFrameDraw(scope,state,inputs,lightOnly);}
     __except(TargetFault(GetExceptionInformation())) {g_composite->error=g_target->error;return false;}
 }
 std::atomic<float> g_frameExposure{0.f};
@@ -1207,6 +1208,8 @@ void* UpscaleHook(void* scope,uint8_t* upscalers,uint8_t* inputs) {
         const ImageView sceneColor=At<ImageView>(inputs,0x10);
         const float exposure=At<float>(inputs,0xa0);
         std::lock_guard lock(g_lock);
+        // The portals' glow on the ground, as the player saw the spot (the portals themselves stay hidden).
+        if(g_target->ticket)InFrameDrawGuard(scope,upscalers-0xf38,inputs,true);
         SnapshotCaptureGuard(scope,upscalers-0xf38,sceneColor,sceneColor,exposure);
     }
     if(lease&&g_world&&g_composite&&g_sharedGpu){
@@ -1300,20 +1303,20 @@ bool Init(const GreeneyeHost* host) {
     }
     const uint8_t registerBytes[]={0x48,0x89,0x5c,0x24,0x08,0x48,0x89,0x6c,0x24,0x10,0x4c,0x89,0x4c,0x24,0x20,0x4c};
     const uint8_t unregisterBytes[]={0x85,0xd2,0x0f,0x84,0xd9,0,0,0,0x48,0x89,0x5c,0x24,0x08,0x57,0x48,0x83};
-    if(std::memcmp(module+0x11878d0,registerBytes,sizeof(registerBytes))||std::memcmp(module+0x118ae80,unregisterBytes,sizeof(unregisterBytes))) return false;
-    g_registerImage=reinterpret_cast<RegisterImageFn>(module+0x11878d0);
-    g_unregisterImage=reinterpret_cast<UnregisterImageFn>(module+0x118ae80);
+    if(std::memcmp(module+0x11a3780,registerBytes,sizeof(registerBytes))||std::memcmp(module+0x11a6e50,unregisterBytes,sizeof(unregisterBytes))) return false;
+    g_registerImage=reinterpret_cast<RegisterImageFn>(module+0x11a3780);
+    g_unregisterImage=reinterpret_cast<UnregisterImageFn>(module+0x11a6e50);
     const uint8_t importImageBytes[]={0x40,0x55,0x56,0x57,0x41,0x56,0x41,0x57,0x48,0x8d,0x6c,0x24,0xd1,0x48,0x81,0xec};
-    if(std::memcmp(module+0x1012f90,importImageBytes,sizeof(importImageBytes)))return false;
-    g_importImage=reinterpret_cast<ImportImageFn>(module+0x1012f90);
+    if(std::memcmp(module+0x102cdf0,importImageBytes,sizeof(importImageBytes)))return false;
+    g_importImage=reinterpret_cast<ImportImageFn>(module+0x102cdf0);
     const uint8_t freeImageBytes[]={0x48,0x8b,0xc4,0x55,0x57,0x48,0x81,0xec,0x88,0x0,0x0,0x0,0x48,0x83,0x3a,0x0};
-    if(std::memcmp(module+0x1014dc0,freeImageBytes,sizeof(freeImageBytes)))return false;
-    g_freeImage=reinterpret_cast<FreeImageFn>(module+0x1014dc0);
+    if(std::memcmp(module+0x102ec70,freeImageBytes,sizeof(freeImageBytes)))return false;
+    g_freeImage=reinterpret_cast<FreeImageFn>(module+0x102ec70);
     g_output=static_cast<ImageView*>(host->keep("portal-imported-output-v1",sizeof(ImageView)));
     if(!g_output)return false;
     const uint8_t bindImageBytes[]={0x41,0xf,0xb7,0x40,0x8,0x4c,0x8b,0x81,0x78,0x1,0x0,0x0,0x48,0x8b,0x49,0x8};
-    if(std::memcmp(module+0x101a570,bindImageBytes,16))return false;
-    g_bindImage=reinterpret_cast<BindImageFn>(module+0x101a570);
+    if(std::memcmp(module+0x10344e0,bindImageBytes,16))return false;
+    g_bindImage=reinterpret_cast<BindImageFn>(module+0x10344e0);
     g_display=static_cast<DisplayState*>(host->keep("portal-native-ui-v1",sizeof(DisplayState)));
     if(!g_display)return false;
     g_auxDisplays=static_cast<DisplayState*>(host->keep("portal-diagnostic-images-v1",2*sizeof(DisplayState)));
@@ -1347,9 +1350,9 @@ bool Init(const GreeneyeHost* host) {
     g_dimensions=reinterpret_cast<DimensionsFn>(host->find(signatures::dimensions,nullptr));
     g_sceneReady=reinterpret_cast<ReadyFn>(host->find(signatures::sceneReady,nullptr));
     g_sceneIbl=reinterpret_cast<BindFn>(host->find(signatures::sceneIbl,nullptr));
-    if(reinterpret_cast<void*>(g_sceneIbl)!=module+0x1100d0)return false;
+    if(reinterpret_cast<void*>(g_sceneIbl)!=module+0x1121f0)return false;
     g_terrainRequest=reinterpret_cast<TerrainRequestFn>(host->find(signatures::terrainRequest,nullptr));
-    if(reinterpret_cast<void*>(g_terrainRequest)!=module+0x10a8a30)return false;
+    if(reinterpret_cast<void*>(g_terrainRequest)!=module+0x10c42d0)return false;
     if(!g_target||!g_scope||!g_plan||!g_image||!g_commit||!g_end||!g_release||!g_dimensions) {
         host->log("Town Portal: independent target signatures unavailable");
         g_target=nullptr;
@@ -1368,7 +1371,7 @@ bool Init(const GreeneyeHost* host) {
     g_stateCreate=reinterpret_cast<StateCreateFn>(host->hook(stateEntry,reinterpret_cast<void*>(StateCreateHook),15,nullptr,0));
     if(!g_stateCreate)return false;
     if(!rootEntry||!createEntry||!bindEntry||!destroyEntry||!tickEntry||!projectionEntry||!projectionMatrixEntry) return false;
-    g_projectionCaller=module+0x12af6c;
+    g_projectionCaller=module+0x12d2a2;
     // First 15 bytes end at movaps [rsp+20],xmm6; no relative operands.
     g_projectionDesc=reinterpret_cast<ProjectionDescFn>(host->hook(projectionEntry,reinterpret_cast<void*>(ProjectionDescHook),15,nullptr,0));
     if(!g_projectionDesc)return false;
@@ -1389,12 +1392,12 @@ bool Init(const GreeneyeHost* host) {
     if (!entry) { host->log("Town Portal scene probe: verified render entry missing");return false; }
     g_next=reinterpret_cast<RenderFn>(host->hook(entry,reinterpret_cast<void*>(RenderHook),15,nullptr,0));
     host->log(g_next?"Town Portal scene probe: native render observer active; camera preview is opt-in":"Town Portal scene probe: hook unavailable");
-    // Optional: renderView's call into the upscaler (0x13b0dd -> 0x118610). Without it
+    // Optional: renderView's call into the upscaler (0x13d4db -> 0x11a7a0). Without it
     // portals are drawn over the finished frame.
     if(host->redirectCall){
-        if(auto* found=host->find("00 00 83 BF 80 02 00 00 20 0F 94 85 64 4C 00 00 E8 ?? ?? ?? ??",nullptr)){
+        if(auto* found=host->find("00 00 83 BF 80 02 00 00 20 0F 94 85 04 4B 00 00 E8 ?? ?? ?? ??",nullptr)){
             auto* site=found+16;int32_t delta=0;std::memcpy(&delta,site+1,4);
-            if(host->generation>1||site+5+delta==module+0x118610)
+            if(host->generation>1||site+5+delta==module+0x11a7a0)
                 g_upscaleNext=reinterpret_cast<UpscaleFn>(host->redirectCall(site,reinterpret_cast<void*>(UpscaleHook)));
         }
     }

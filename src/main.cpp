@@ -132,7 +132,7 @@ void Log(const char* msg) {
 }
 
 void* GetGameClient(void* app) {
-    auto* ui = app ? at<void*>(app, 0x35280) : nullptr;
+    auto* ui = app ? at<void*>(app, 0x352a0) : nullptr;
     return ui ? at<void*>(ui, 0x1b8) : nullptr;
 }
 
@@ -1017,7 +1017,7 @@ SpotCheck CheckFieldSpot(float px, float py, float pz, float dirX, float dirZ, f
     // is a guess: a rise of half a metre would meet the shin-height tests, so they are skipped.
     const bool ground = portal::travel::RefineLocalGroundY(cx, y, cz);
     if (!ground) unknown = true;
-    else if (std::fabs(y - py) > 1.5f) { if (why) *why = "ground height"; return SpotCheck::blocked; }
+    else if (std::fabs(y - py) > 1.5f) { outY = y; if (why) *why = "ground height"; return SpotCheck::blocked; }
     outY = y;
     // From just outside the player's own collider to just behind the portal.
     for (float h : {0.6f, 1.6f})
@@ -2243,12 +2243,12 @@ GREENEYE_MOD_START {
     }
 
     if (serverSide) {
-        Log("Town Portals 1.0.4: server companion loaded");
+        Log("Town Portals 1.0.5: server companion loaded");
         return true;
     }
 
     auto* mapTail = host->find("48 8D AC 24 A0 F8 FF FF 48 81 EC 60 08 00 00 48 8B 05", nullptr);
-    auto* loop = host->find("40 53 55 56 57 41 54 41 55 41 56 41 57 48 81 EC 98 00 00 00 48 8D 81 58 4F 03 00", nullptr);
+    auto* loop = host->find("40 53 55 56 57 41 54 41 55 41 56 41 57 48 81 EC 98 00 00 00 48 8D 81 78 4F 03 00", nullptr);
     auto* send = host->find("4C 8B DC 55 56 57 49 8D AB 18 FF FF FF", nullptr);
     auto* play = host->find("4C 8B DC 55 49 8D AB E8 FD FF FF 48 81 EC 10 03 00 00", nullptr);
     if (!mapTail || !loop || !send || !play) {
@@ -2306,7 +2306,7 @@ GREENEYE_MOD_START {
     portal::casting::Init(host);
     LogGraphicsAdapters();
 
-    Log("Town Portals 1.0.4: press T (OpenPortalKey in town-portal.ini) to open a portal to your Preferred Spawn Flame Altar");
+    Log("Town Portals 1.0.5: press T (OpenPortalKey in town-portal.ini) to open a portal to your Preferred Spawn Flame Altar");
     return true;
 }
 

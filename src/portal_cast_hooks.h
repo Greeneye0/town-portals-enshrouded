@@ -6,8 +6,15 @@
 namespace portal::casting::hooks {
 inline constexpr char inputPattern[] =
     "4C 89 6C 24 28 48 89 44 24 20 E8 ?? ?? ?? ?? 48 8B 9C 24 98 01 00 00";
-inline constexpr uint32_t inputCallRva = 0x3abd23, inputTargetRva = 0x2437c0;
+inline constexpr uint32_t inputCallRva = 0x3b2223, inputTargetRva = 0x2476f0;
 inline constexpr size_t inputCallOffset = 10;
+// The pose adapter: the animation graph's call into its node evaluation (both ABIs unchanged by
+// the 2026-11-02 patch), the component lookup and the pose stack reader it uses.
+inline constexpr char evaluatePattern[] =
+    "48 8D 95 80 00 00 00 E8 ?? ?? ?? ?? 48 8B B5 80 00 00 00 48 C7 85 A0 00 00 00 00 00 00 00 80 BE 51 0F 00 00 00";
+inline constexpr size_t evaluateCallOffset = 7;
+inline constexpr uint32_t evaluateCallRva = 0x92efba, evaluateTargetRva = 0x926d00;
+inline constexpr uint32_t componentRva = 0x9b2e60, stackRva = 0x937750;
 using Read = void (*)(const void*, void*, size_t);
 
 inline bool CallsTarget(const uint8_t* bytes, uintptr_t site, uintptr_t target) {

@@ -126,14 +126,14 @@ uint64_t g_nextLanguageCheck = 0;
 void** g_root = nullptr;
 bool g_ready = false;
 
-// UI Asset offsets (FbUiPrimitives at assets + 0xd250)
-constexpr size_t kAssetCircle = 0xd250 + 0x00;
-constexpr size_t kAssetSoftGlow = 0xd250 + 0x20;
-constexpr size_t kAssetRingGlow = 0xd250 + 0x30;
-constexpr size_t kAssetBoxInnerGlow = 0xd250 + 0x120;
-constexpr size_t kAssetGlowBoxSmall = 0xd250 + 0x140;
-constexpr size_t kAssetRoundedBox = 0xd250 + 0x180;
-constexpr size_t kAssetSmallText = 0x10a0c;
+// UI Asset offsets (FbUiPrimitives at assets + 0xd3d0; 0xd250 before the 2026-11-02 patch)
+constexpr size_t kAssetCircle = 0xd3d0 + 0x00;
+constexpr size_t kAssetSoftGlow = 0xd3d0 + 0x20;
+constexpr size_t kAssetRingGlow = 0xd3d0 + 0x30;
+constexpr size_t kAssetBoxInnerGlow = 0xd3d0 + 0x120;
+constexpr size_t kAssetGlowBoxSmall = 0xd3d0 + 0x140;
+constexpr size_t kAssetRoundedBox = 0xd3d0 + 0x180;
+constexpr size_t kAssetSmallText = 0x10bbc;
 
 // Portal sounds: two parts of the portal whoosh the user chose (tools/build-portal-sounds.py),
 // played with Windows audio. The game's own UI sound player (evidence:
@@ -149,7 +149,7 @@ void PlayEffect(const uint8_t* wav) {
 }
 #ifdef TOWN_PORTAL_DEV
 // Dev audition: Ctrl+Shift+1..0 play these FbUiSounds entries (offsets from
-// fastTravelTriggered at bundle+0x129f0; C:\temp\enshrouded-re\out\sound-fasttravel\types-dump.txt).
+// fastTravelTriggered, bundle+0x12ba0 since the 2026-11-02 patch (FbUiSounds itself is unchanged); C:\temp\enshrouded-re\out\sound-fasttravel\types-dump.txt).
 struct SoundCandidate { const char* name; int32_t delta; };
 constexpr SoundCandidate kSoundCandidates[] = {
     {"1 map fastTravelTriggered", 0},
@@ -403,7 +403,7 @@ void DrawNineSliceBox(void* widgetRaw, size_t assetOffset, float x, float y, flo
     g_nineSlice(widgetRaw, rect, assets + assetOffset, borders, PackColor(abgr, alpha, bright));
 }
 
-// FbUiBundle.namedStyles (+0x10a0c, UiCharacterStyle entries of 0x58 bytes: fontSize at
+// FbUiBundle.namedStyles (+0x10bbc, UiCharacterStyle entries of 0x58 bytes: fontSize at
 // +0x20, dropShadow at +0x44): the game's interaction prompts use the outlined default
 // style, larger than the default text.
 constexpr size_t kStyleOutline = kAssetSmallText + 0x58;
@@ -501,7 +501,15 @@ constexpr float kPi = 3.14159265359f;
 std::array<std::vector<uint32_t>, kFrameCount> g_frames;
 std::array<uint32_t, kFrameCount> g_textureIds{};
 void* g_textureRepo = nullptr;
+// The texture keys come from the pixels, not the time: a hot reload or a relabel with the same
+// pictures finds the game's cached textures again, and a changed picture gets a new key. (Keys
+// that changed on every load left dead 16 MB maps in the game's UI texture budget until restart,
+// and the loading map then came up blank white, 2026-10-31.)
 uint64_t g_textureGeneration = 0;
+uint64_t PixelHash(const std::vector<uint32_t>& pixels, uint64_t h = 0xcbf29ce484222325ull) {
+    for (uint32_t p : pixels) h = (h ^ p) * 0x100000001b3ull;
+    return h;
+}
 uint8_t* g_observedAssets=nullptr;
 uint64_t g_hudFrame=0,g_compositeDrawnFrame=~0ull;
 // The local player's player-list id: their own portals take their minimap colour (gold).
@@ -550,7 +558,6 @@ float Smooth(float a, float b, float x) {
 // Integer angular harmonics make the last/first animation frames continuous.
 void BuildFrames() {
     QueryPerformanceFrequency(&g_frequency);
-    g_textureGeneration = GetTickCount64();
     for (int f=0;f<kFrameCount;++f) {
         auto& pixels=g_frames[f];
         pixels.resize(kFramePixels);
@@ -584,6 +591,8 @@ void BuildFrames() {
             }
         }
     }
+    g_textureGeneration = 0;
+    for (const auto& frame : g_frames) g_textureGeneration = PixelHash(frame, g_textureGeneration ^ 0xcbf29ce484222325ull);
 }
 
 // The loading screen's map (greeneye\town-portal\map\map.jpg, tools/map/make_map.py; labels drawn on it) and
@@ -595,12 +604,13 @@ std::vector<uint32_t> g_mapPixels; // labels drawn on it
 // labels are drawn on the blank map.
 std::vector<uint32_t> g_mapLetteredPixels;
 int g_mapLetteredLanguage = -1;
-uint32_t g_mapLetteredGeneration = 0;
+uint64_t g_mapLetteredGeneration = 0; // PixelHash of g_mapLetteredPixels
 std::vector<uint32_t> g_mapLabeledPixels; // g_mapPixels with the labels written in (BakeMapLabels)
 // The backdrop round the map (tools/map/make_backdrop.py): the game's menus' navy with ring arcs.
 std::vector<uint32_t> g_backdropPixels;
 uint32_t g_backdropW = 0, g_backdropH = 0;
-uint32_t g_mapLabeledGeneration = 0;
+uint64_t g_mapLabeledGeneration = 0; // PixelHash of g_mapLabeledPixels
+uint64_t g_mapGeneration = 0;        // PixelHash of everything LoadMap makes
 uint32_t g_mapSize = 0;
 constexpr uint32_t kDotDim = 64;
 std::vector<uint32_t> g_dotPixels, g_ringPixels, g_discPixels; // disc: soft, filled, for the route's strokes
@@ -704,6 +714,11 @@ void LoadMap() {
                 g_mistPixels[f][size_t(y) * kOvalW + x] = Rgba(glow * alpha, glow * alpha, glow * alpha, alpha);
             }
         }
+    g_mapGeneration = 0;
+    for (const auto* set : {&g_mapPixels, &g_backdropPixels, &g_altarPixels, &g_altarBasePixels, &g_altarFlamePixels,
+                            &g_dotPixels, &g_ringPixels, &g_discPixels, &g_ovalRimPixels})
+        g_mapGeneration = PixelHash(*set, g_mapGeneration ^ 0xcbf29ce484222325ull);
+    for (const auto& frame : g_mistPixels) g_mapGeneration = PixelHash(frame, g_mapGeneration ^ 0xcbf29ce484222325ull);
     g_mapState = 1;
 }
 
@@ -742,7 +757,6 @@ uint32_t FrameTexture(int index) {
 bool LoadLetteredMap(text::Lang language) {
     g_mapLetteredLanguage = int(language);
     g_mapLetteredPixels.clear();
-    ++g_mapLetteredGeneration;
     wchar_t path[MAX_PATH]{}, file[32]{};
     GetModuleFileNameW(nullptr, path, MAX_PATH);
     if (auto* slash = wcsrchr(path, L'\\')) slash[1] = 0;
@@ -754,6 +768,7 @@ bool LoadLetteredMap(text::Lang language) {
     if (!defaults::LoadRgba(path, w, h, rgba) || w != g_mapSize || h != g_mapSize) return false;
     g_mapLetteredPixels.resize(size_t(w) * h);
     std::memcpy(g_mapLetteredPixels.data(), rgba.data(), rgba.size());
+    g_mapLetteredGeneration = PixelHash(g_mapLetteredPixels);
     return true;
 }
 
@@ -772,8 +787,8 @@ uint32_t MapTexture(uint64_t sub) {
     desc.pixels = pixels.data();
     desc.byteSize = uint32_t(pixels.size() * sizeof(uint32_t));
     desc.keyLo = 0x544f574e504f5254ull;
-    desc.keyHi = 0x4d41504d41503031ull ^ g_textureGeneration; // "MAPMAP01"
-    // Relabelled or another language's map: a new texture.
+    desc.keyHi = 0x4d41504d41503031ull ^ g_mapGeneration; // "MAPMAP01"
+    // Relabelled or another language's map: a new texture (its pixels' hash).
     desc.keySub = sub == 10 ? sub | uint64_t(g_mapLabeledGeneration) << 8 : sub == 8 ? sub | uint64_t(g_mapLetteredGeneration) << 8 : sub;
     desc.width = oval ? kOvalW : sub == 11 ? g_backdropW : dim;
     desc.height = oval ? kOvalH : sub == 11 ? g_backdropH : dim;
@@ -888,7 +903,7 @@ void BakeMapLabels() {
         if (font) DeleteObject(font);
     }
     DeleteDC(dc);
-    ++g_mapLabeledGeneration;
+    g_mapLabeledGeneration = PixelHash(g_mapLabeledPixels);
 }
 
 // The field portal on the loading map, like the portal in the world: soft light, mist drifting
@@ -1580,7 +1595,7 @@ bool Init(const GreeneyeHost* host, void** uiRoot) {
         "48 8B C4 48 89 78 10 4C 89 70 18 4C 89 78 20 55 48 8B EC 48 81 EC 80 00 00 00 48 8B 79 10 4C 8B F2 4C 8B F9 83 7F 68 00", nullptr));
     // The map's fast-travel handler loads the sound reference with movups [rax+disp32].
     if (auto* site = static_cast<uint8_t*>(host->find(
-            "48 8B 0D ?? ?? ?? ?? 48 8D 55 A0 48 8B 81 C8 00 00 00 0F 10 80 ?? ?? ?? ?? 0F 29 45 A0 E8 ?? ?? ?? ?? 41 80 BF", nullptr))) {
+            "48 8B 0D ?? ?? ?? ?? 48 8D 55 A0 48 8B 81 C8 00 00 00 0F 10 80 ?? ?? ?? ?? 0F 29 45 A0 E8 ?? ?? ?? ?? 41 0F B6 8F", nullptr))) {
         int32_t offset = 0;
         host->read(site + 0x15, &offset, sizeof(offset));
         if (offset > 0 && offset < 0x20000) g_fastTravelSound = uint32_t(offset);
@@ -1787,7 +1802,7 @@ void AppendPresentationStatus(char* json,uint32_t capacity) {
     uint8_t* entries=nullptr;uint32_t count=0;
     __try {
         if(assets) {
-            auto* array=assets+0xff88;
+            auto* array=assets+0x10138;
             count=at<uint32_t>(array,4);
             if(count<=64&&at<int32_t>(array,0))entries=array+at<int32_t>(array,0);
         }

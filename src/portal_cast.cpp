@@ -130,7 +130,8 @@ bool BindSafe(void* client){
   void* ref[3]{};g_component(ref,storage,0xb4c3563e,local);
   if(!ref[0])return false;
   uint32_t handle=get<uint32_t>(ref[0],0);uint32_t index=handle&0xffffff;
-  auto* system=get<uint8_t*>(world,0x618);if(!system||!handle||index>=get<uint16_t>(system,0x78))return false;
+  // world+628: AnimationGraphSystem (+618 before the 2026-11-02 patch).
+  auto* system=get<uint8_t*>(world,0x628);if(!system||!handle||index>=get<uint16_t>(system,0x78))return false;
   auto* generations=get<uint8_t*>(system,0x50);auto* pool=get<uint8_t*>(system,0x38);
   if(!generations||!pool||(handle>>24)-1!=uint32_t(generations[index])%255)return false;
   auto* graph=pool+size_t(index)*0xfd0;
@@ -143,10 +144,10 @@ bool BindSafe(void* client){
 bool Init(const GreeneyeHost* host){
  auto* exe=reinterpret_cast<uint8_t*>(GetModuleHandleW(nullptr));
  if(!greeneye::HostHasHooks(host)||!host->redirectCall||!host->read||!build::Client())return false;
- auto* site=exe+0x92458a;
- if(!hooks::CheckCall(host->read,site,exe+0x91c260))return false;
- g_component=reinterpret_cast<ComponentFn>(exe+0x9a75d0);
- g_stack=reinterpret_cast<StackFn>(exe+0x92cde0);
+ auto* site=exe+hooks::evaluateCallRva;
+ if(!hooks::CheckCall(host->read,site,exe+hooks::evaluateTargetRva))return false;
+ g_component=reinterpret_cast<ComponentFn>(exe+hooks::componentRva);
+ g_stack=reinterpret_cast<StackFn>(exe+hooks::stackRva);
  g_next=reinterpret_cast<EvaluateFn>(host->redirectCall(site,reinterpret_cast<void*>(EvaluateHook)));
  auto* input=exe+hooks::inputCallRva;
  if(hooks::CheckInputCall(host->read,input,exe+hooks::inputTargetRva))
