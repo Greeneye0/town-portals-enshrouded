@@ -2,6 +2,7 @@
 #include "greeneye.h"
 #include "portal_types.h"
 #include "portal_math.h"
+#include "portal_protocol.h"
 #include <cstdint>
 #include <vector>
 
@@ -51,6 +52,9 @@ void ClearAllPortals();
 void GetActivePortals(std::vector<PortalInstance>& outPortals);
 bool GetPortalByOwner(uint64_t ownerAccount, PortalInstance& outPortal);
 bool MarkOwnerVisitedBase(uint64_t ownerAccount);
+// The latest clearer base spot another player suggested for the local player's portal portalId
+// (taken once).
+bool TakeBaseSuggestion(uint64_t portalId, BaseSpotMsg& out);
 
 uint64_t LocalSteamAccount();
 

@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <tuple>
 #include <mutex>
 #include <string_view>
 
@@ -127,6 +128,7 @@ uint64_t g_nativeApplied=0;
 uint64_t g_directApplied=0;
 
 PendingTeleport g_requests[16]{};
+BaseSpotMsg g_baseSuggestion{}; // under g_lock
 PortalInstance g_portals[kMaxPortals]{};
 
 struct EcsPlayerSlot {
@@ -619,6 +621,38 @@ void PlayerTick(void* ctx, void* descriptors) {
     }
 }
 
+// A Teleport the game queued for a player by itself, not for a portal trip, logged with where
+// it leads: players were sent back to their altar on jumping, long after a trip, with nothing
+// in the log (aerospace, jamesleafe, 2026-10/11). The game queues these to correct a player
+// who drifted from an object they are linked to (14044f9c0, from the use state at 140233630).
+// Under g_lock. Small corrections (under 3 m) are left out.
+void LogGameTeleport(void* descriptors, uint32_t id, void* storage) {
+    void* component = at<void*>(static_cast<uint8_t*>(descriptors) + 0x100, 0);
+    void* posComp = at<void*>(descriptors, 0x10);
+    if (!component || !posComp || at<uint8_t>(component, 0x48)) return;
+    for (const auto& p : g_requests)
+        if (p.stage != Stage::none && p.entity == id && p.storage == storage) return;
+    const double fx = field<int64_t>(posComp, 0x00) * kInvFixedScale, fy = field<int64_t>(posComp, 0x08) * kInvFixedScale,
+                 fz = field<int64_t>(posComp, 0x10) * kInvFixedScale;
+    const double tx = at<int64_t>(component, 0x00) * kInvFixedScale, ty = at<int64_t>(component, 0x08) * kInvFixedScale,
+                 tz = at<int64_t>(component, 0x10) * kInvFixedScale;
+    const uint32_t relative = at<uint32_t>(component, 0x38);
+    const double distance = std::sqrt((tx - fx) * (tx - fx) + (ty - fy) * (ty - fy) + (tz - fz) * (tz - fz));
+    if (!relative && distance < 3.0) return;
+    static uint64_t lastLogged = 0;
+    const uint64_t now = GetTickCount64();
+    if (now - lastLogged < (relative ? 10000u : 500u)) return;
+    lastLogged = now;
+    char line[256]{};
+    if (relative)
+        std::snprintf(line, sizeof(line), "Town Portal: the game moves player %u (at %.1f, %.1f, %.1f) to entity %u, offset %.1f, %.1f, %.1f (ground snap %u)",
+                      id, fx, fy, fz, relative, tx, ty, tz, at<uint8_t>(component, 0x49));
+    else
+        std::snprintf(line, sizeof(line), "Town Portal: the game moves player %u from %.1f, %.1f, %.1f to %.1f, %.1f, %.1f (%.0f m, ground snap %u); not a portal trip",
+                      id, fx, fy, fz, tx, ty, tz, distance, at<uint8_t>(component, 0x49));
+    Log(line);
+}
+
 bool ApplyTick(void* ctx, void* descriptors) {
     if (g_faulted) return true;
     uint32_t id = Id(ctx);
@@ -640,6 +674,7 @@ bool ApplyTick(void* ctx, void* descriptors) {
     if (!Authority(ctx)) return true;
     void* storage = Storage(ctx);
     std::lock_guard guard(g_lock);
+    if (id != 0 && id <= 16) LogGameTeleport(descriptors, id, storage);
 
     for (auto& p : g_requests) {
         if ((p.stage != Stage::armed && p.stage != Stage::cancelling) ||
@@ -746,6 +781,18 @@ void UpsertPortalLocked(const PortalInstance& instance) {
                 if (oldField.hasTerrainGrid && !slot.fieldEnd.hasTerrainGrid) {
                     slot.fieldEnd.hasTerrainGrid = true;
                     std::memcpy(slot.fieldEnd.terrainRelY, oldField.terrainRelY, sizeof(oldField.terrainRelY));
+                }
+                // Each end's move, from any source (the base end of a portal was seen high in the
+                // air with no log of it, 2026-11-01).
+                for (auto [before, after, which] : {std::tuple{&oldField, &slot.fieldEnd, "field"}, std::tuple{&oldBase, &slot.baseEnd, "base"}}) {
+                    const float dx = after->wx - before->wx, dy = after->wy - before->wy, dz = after->wz - before->wz;
+                    if (dx * dx + dy * dy + dz * dz > 1.0f) {
+                        char line[192]{};
+                        std::snprintf(line, sizeof(line), "Town Portal: portal %llu %s end moved %.1f m, from %.1f, %.1f, %.1f to %.1f, %.1f, %.1f",
+                                      static_cast<unsigned long long>(slot.portalId), which, std::sqrt(dx * dx + dy * dy + dz * dz),
+                                      before->wx, before->wy, before->wz, after->wx, after->wy, after->wz);
+                        Log(line);
+                    }
                 }
                 if (oldBase.hasTerrainGrid && !slot.baseEnd.hasTerrainGrid) {
                     slot.baseEnd.hasTerrainGrid = true;
@@ -864,11 +911,36 @@ int HandleProtocolChat(void* store, uint8_t type, uint64_t* text, uint32_t sende
         }
         {
             std::lock_guard guard(g_lock);
+            // The base end in the same place: keep the height this game refined from its own
+            // terrain. The owner, far from the base, sends a guessed height every 12 s, and the
+            // portal blinked into the ground and back out (2026-11-02).
+            for (const auto& slot : g_portals) {
+                if (!slot.active || slot.portalId != inst.portalId) continue;
+                const float dx = slot.baseEnd.wx - inst.baseEnd.wx, dz = slot.baseEnd.wz - inst.baseEnd.wz;
+                if (dx * dx + dz * dz < 0.3f * 0.3f && std::fabs(slot.baseEnd.wy - inst.baseEnd.wy) < 3.0f) {
+                    inst.baseEnd.pos.y = slot.baseEnd.pos.y;
+                    inst.baseEnd.wy = slot.baseEnd.wy;
+                }
+                break;
+            }
             UpsertPortalLocked(inst);
         }
         // On the host store (not client store), let the server relay the broadcast to all connected clients,
         // and consume it on the client store so it never prints in the chat UI.
         return isClientStore ? 2 : 0;
+    }
+
+    // A clearer base spot for a portal: "/tpb1 ...", for its owner.
+    BaseSpotMsg spotMsg{};
+    if (ParseBaseSpot(line, spotMsg)) {
+        if (isClientStore) {
+            if (spotMsg.ownerAccount == g_localAccount.load()) {
+                std::lock_guard guard(g_lock);
+                g_baseSuggestion = spotMsg;
+            }
+            return 2;
+        }
+        return 0; // the host relays it to the owner
     }
 
     // Portal Close broadcast: "/tpc1 ..."
@@ -1261,6 +1333,15 @@ void SampleEndpointTerrain(PortalEndpoint& ep) {
         std::memcpy(ep.terrainRelY, grid, sizeof(grid));
         ep.hasTerrainGrid = true;
     }
+}
+
+bool TakeBaseSuggestion(uint64_t portalId, BaseSpotMsg& out) {
+    std::lock_guard guard(g_lock);
+    if (!g_baseSuggestion.portalId) return false;
+    const bool mine = g_baseSuggestion.portalId == portalId;
+    if (mine) out = g_baseSuggestion;
+    g_baseSuggestion = {};
+    return mine;
 }
 
 void UpsertPortal(const PortalInstance& instance) {

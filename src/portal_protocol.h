@@ -30,6 +30,15 @@ struct PortalSyncMsg {
     uint32_t ownerPlayerId{}; // /tpo2 only; 0 from older clients
 };
 
+// A clearer base spot for someone else's portal, from a player standing at the base: the owner,
+// far away when they cast, could not see the area round the altar (portal_main CheckOthersBase).
+struct BaseSpotMsg {
+    uint64_t portalId{};
+    uint64_t ownerAccount{};
+    FixedPos basePos{};
+    int32_t baseYaw{};
+};
+
 struct PortalCloseMsg {
     uint64_t portalId{};
     uint64_t ownerAccount{};
@@ -126,6 +135,34 @@ inline bool ParsePortalSync(std::string_view text, PortalSyncMsg& out) {
         return false;
     }
     if (!m.portalId) return false;
+    out = m;
+    return true;
+}
+
+// Format: "/tpb1 <portalId> <ownerAccount> <bx> <by> <bz> <byaw>"
+inline int FormatBaseSpot(char* buf, size_t cap, const BaseSpotMsg& m) {
+    return sprintf_s(buf, cap, "/tpb1 %llu %llu %lld %lld %lld %d",
+                     static_cast<unsigned long long>(m.portalId),
+                     static_cast<unsigned long long>(m.ownerAccount),
+                     static_cast<long long>(m.basePos.x),
+                     static_cast<long long>(m.basePos.y),
+                     static_cast<long long>(m.basePos.z),
+                     static_cast<int>(m.baseYaw));
+}
+
+inline bool ParseBaseSpot(std::string_view text, BaseSpotMsg& out) {
+    if (!text.starts_with("/tpb1 ") || text.size() > 160) return false;
+    text.remove_prefix(6);
+    BaseSpotMsg m{};
+    if (!detail::NextInt(text, m.portalId, false) ||
+        !detail::NextInt(text, m.ownerAccount, false) ||
+        !detail::NextInt(text, m.basePos.x, false) ||
+        !detail::NextInt(text, m.basePos.y, false) ||
+        !detail::NextInt(text, m.basePos.z, false) ||
+        !detail::NextInt(text, m.baseYaw, true)) {
+        return false;
+    }
+    if (!m.portalId || !m.ownerAccount) return false;
     out = m;
     return true;
 }

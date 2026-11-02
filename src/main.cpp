@@ -965,6 +965,70 @@ bool ChooseBaseSpot(float altarX, float altarY, float altarZ, float preferX, flo
     return true;
 }
 
+// Someone else's portal, from a player standing at its base: the owner chose the base spot far
+// away, where the area round the altar was not loaded and counted as open (a base end beside a
+// table, 2026-11-02). Judged once per spot, like CheckOwnBasePortal; a clearer spot is sent to
+// the owner (/tpb1), who moves the portal and broadcasts it, so every game agrees on it.
+struct BaseSuggested { uint64_t portalId = 0; portal::FixedPos at{}; };
+BaseSuggested g_baseSuggested[portal::kMaxPortals]{};
+
+void CheckOthersBasePortal(void* gameClient, const portal::PortalInstance& p) {
+    BaseSuggested* record = nullptr;
+    for (auto& r : g_baseSuggested) {
+        if (r.portalId != p.portalId) continue;
+        if (r.at.x == p.baseEnd.pos.x && r.at.z == p.baseEnd.pos.z) return; // this spot was judged
+        record = &r;
+    }
+    BaseSpot spot{p.baseEnd.wx, p.baseEnd.wy, p.baseEnd.wz, -p.baseEnd.nx, -p.baseEnd.nz};
+    const auto check = CheckBaseSpot(p.altarX, p.altarY, p.altarZ, spot);
+    if (check == SpotCheck::unknown) return;
+    if (!record) {
+        record = &g_baseSuggested[0];
+        for (auto& r : g_baseSuggested) if (!r.portalId) { record = &r; break; }
+    }
+    *record = {p.portalId, p.baseEnd.pos};
+    const int crowding = check == SpotCheck::clear ? SpotCrowding(spot) : -1;
+    if (crowding == 0) return;
+    BaseSpot better{};
+    int betterCrowding = 0;
+    if (!ChooseBaseSpot(p.altarX, p.altarY, p.altarZ, spot.dirX, spot.dirZ, p.fieldEnd.wx, p.fieldEnd.wz, p.ownerAccount, better, true, &betterCrowding))
+        return;
+    if (crowding >= 0 && betterCrowding >= crowding) return;
+    portal::PortalEndpoint end{};
+    end.wx = better.x; end.wy = better.y; end.wz = better.z;
+    end.SyncFixedFromFloat();
+    end.SetNormal(-better.dirX, -better.dirZ);
+    char line[160]{};
+    const int len = portal::FormatBaseSpot(line, sizeof(line), {p.portalId, p.ownerAccount, end.pos, end.yawMillirad});
+    if (len > 0) SendHiddenLine(gameClient, {line, static_cast<size_t>(len)});
+    std::snprintf(line, sizeof(line), "Town Portal: sent the owner of portal %llu a clearer base spot (crowding %d -> %d)",
+                  static_cast<unsigned long long>(p.portalId), crowding, betterCrowding);
+    Log(line);
+}
+
+// The owner's side: a spot another player suggested, taken while the owner is too far from the
+// base to judge it themselves (near it, CheckOwnBasePortal decides), at most every 30 s so two
+// players at the base cannot keep moving it, and only by the altar.
+uint64_t g_baseSuggestionTaken = 0;
+
+void TakeOthersBaseSpot(void* gameClient, portal::PortalInstance& p, float baseDistanceSq, uint64_t now) {
+    portal::BaseSpotMsg m{};
+    if (!portal::travel::TakeBaseSuggestion(p.portalId, m)) return;
+    if (baseDistanceSq < 60.0f * 60.0f || now - g_baseSuggestionTaken < 30000) return;
+    portal::PortalEndpoint end = p.baseEnd;
+    end.pos = m.basePos;
+    end.SyncFloatFromFixed();
+    end.SetNormalFromYaw(m.baseYaw);
+    const float ax = end.wx - p.altarX, az = end.wz - p.altarZ;
+    if (ax * ax + az * az > 8.5f * 8.5f || std::fabs(end.wy - p.altarY) > 3.0f) return;
+    end.hasTerrainGrid = false;
+    p.baseEnd = end;
+    portal::travel::UpsertPortal(p);
+    BroadcastPortalOpen(gameClient, p);
+    g_baseSuggestionTaken = now;
+    Log("Town Portal: base portal moved to a clearer spot another player found by the altar");
+}
+
 // Once the owner is near the base, the spot can be judged: keep it if clear and open, move it
 // if it turned out to be in a wall, a chest or another player's portal, or crowded by objects
 // when a more open spot by the altar exists; wait while still unknown.
@@ -1826,6 +1890,9 @@ void RunGameplayTick(void* app, std::vector<portal::PortalInstance>& outPortals,
                     }
                 }
             }
+            if (p.ownerAccount == localAccount) TakeOthersBaseSpot(gameClient, p, dbSq, now);
+            else if (dbSq < 40.0f * 40.0f && now - std::min(now, p.openedTick) > portal::kPortalFormMs)
+                CheckOthersBasePortal(gameClient, p);
             // The owner re-checks a provisional base spot once its area has loaded around them.
             if (p.ownerAccount == localAccount && g_baseChecked != p.portalId && dbSq < 60.0f * 60.0f &&
                 now - std::min(now, p.openedTick) > portal::kPortalFormMs)
@@ -2243,7 +2310,7 @@ GREENEYE_MOD_START {
     }
 
     if (serverSide) {
-        Log("Town Portals 1.0.6: server companion loaded");
+        Log("Town Portals 1.0.7: server companion loaded");
         return true;
     }
 
@@ -2306,7 +2373,7 @@ GREENEYE_MOD_START {
     portal::casting::Init(host);
     LogGraphicsAdapters();
 
-    Log("Town Portals 1.0.6: press T (OpenPortalKey in town-portal.ini) to open a portal to your Preferred Spawn Flame Altar");
+    Log("Town Portals 1.0.7: press T (OpenPortalKey in town-portal.ini) to open a portal to your Preferred Spawn Flame Altar");
     return true;
 }
 
