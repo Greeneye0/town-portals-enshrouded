@@ -105,3 +105,13 @@ cl /nologo /std:c++20 /utf-8 /O2 /EHsc /MT /W4 tests\test_language.cpp /Fo:build
 if errorlevel 1 exit /b 1
 bin\test_language.exe
 if errorlevel 1 exit /b 1
+
+cl /nologo /std:c++20 /O2 /EHa /MT /W4 tests\test_root_descriptor.cpp /Fo:build\test_root_descriptor.obj /Fe:bin\test_root_descriptor.exe /link user32.lib kernel32.lib
+if errorlevel 1 exit /b 1
+bin\test_root_descriptor.exe
+if errorlevel 1 exit /b 1
+
+cl /nologo /std:c++20 /O2 /EHa /MT /W4 tests\test_cast_pose.cpp /Fo:build\test_cast_pose.obj /Fe:bin\test_cast_pose.exe /link user32.lib kernel32.lib
+if errorlevel 1 exit /b 1
+bin\test_cast_pose.exe
+if errorlevel 1 exit /b 1

@@ -132,7 +132,7 @@ void Log(const char* msg) {
 }
 
 void* GetGameClient(void* app) {
-    auto* ui = app ? at<void*>(app, 0x35280) : nullptr;
+    auto* ui = app ? at<void*>(app, 0x352a0) : nullptr;
     return ui ? at<void*>(ui, 0x1b8) : nullptr;
 }
 
@@ -339,9 +339,9 @@ bool GetPlayerPosAndFacing(uint8_t* uiClient, float& outX, float& outY, float& o
 
     // 1. Primary live 64-bit fixed-point player world position from clientWorld (+0x47d2f0)
     if (uint8_t* clientWorld = *reinterpret_cast<uint8_t**>(uiClient + 0x47d2f0)) {
-        int64_t rawX = *reinterpret_cast<int64_t*>(clientWorld + 0x2c08);
-        int64_t rawY = *reinterpret_cast<int64_t*>(clientWorld + 0x2c10);
-        int64_t rawZ = *reinterpret_cast<int64_t*>(clientWorld + 0x2c18);
+        int64_t rawX = *reinterpret_cast<int64_t*>(clientWorld + 0x2c18);
+        int64_t rawY = *reinterpret_cast<int64_t*>(clientWorld + 0x2c20);
+        int64_t rawZ = *reinterpret_cast<int64_t*>(clientWorld + 0x2c28);
         if (rawX != 0 || rawZ != 0) {
             float px = static_cast<float>(static_cast<double>(rawX) * portal::kInvFixedScale);
             float py = static_cast<float>(static_cast<double>(rawY) * portal::kInvFixedScale);
@@ -2248,7 +2248,7 @@ GREENEYE_MOD_START {
     }
 
     auto* mapTail = host->find("48 8D AC 24 A0 F8 FF FF 48 81 EC 60 08 00 00 48 8B 05", nullptr);
-    auto* loop = host->find("40 53 55 56 57 41 54 41 55 41 56 41 57 48 81 EC 98 00 00 00 48 8D 81 58 4F 03 00", nullptr);
+    auto* loop = host->find("40 53 55 56 57 41 54 41 55 41 56 41 57 48 81 EC 98 00 00 00 48 8D 81 78 4F 03 00", nullptr);
     auto* send = host->find("4C 8B DC 55 56 57 49 8D AB 18 FF FF FF", nullptr);
     auto* play = host->find("4C 8B DC 55 49 8D AB E8 FD FF FF 48 81 EC 10 03 00 00", nullptr);
     if (!mapTail || !loop || !send || !play) {

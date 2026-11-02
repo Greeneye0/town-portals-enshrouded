@@ -51,7 +51,7 @@ UiText MakeText(const char* s) {
     return t;
 }
 
-// 64-byte descriptor passed to Enshrouded's native dynamic RGBA8 UI texture uploader (0xa41b30)
+// 64-byte descriptor passed to Enshrouded's native dynamic RGBA8 UI texture uploader (0xa4e380)
 struct DynamicUiTextureDesc {
     uint8_t flags;       // +0x00: 0
     uint8_t pad0[7];     // +0x01
@@ -126,14 +126,14 @@ uint64_t g_nextLanguageCheck = 0;
 void** g_root = nullptr;
 bool g_ready = false;
 
-// UI Asset offsets (FbUiPrimitives at assets + 0xd250)
-constexpr size_t kAssetCircle = 0xd250 + 0x00;
-constexpr size_t kAssetSoftGlow = 0xd250 + 0x20;
-constexpr size_t kAssetRingGlow = 0xd250 + 0x30;
-constexpr size_t kAssetBoxInnerGlow = 0xd250 + 0x120;
-constexpr size_t kAssetGlowBoxSmall = 0xd250 + 0x140;
-constexpr size_t kAssetRoundedBox = 0xd250 + 0x180;
-constexpr size_t kAssetSmallText = 0x10a0c;
+// UI Asset offsets (FbUiPrimitives at assets + 0xd3d0)
+constexpr size_t kAssetCircle = 0xd3d0 + 0x00;
+constexpr size_t kAssetSoftGlow = 0xd3d0 + 0x20;
+constexpr size_t kAssetRingGlow = 0xd3d0 + 0x30;
+constexpr size_t kAssetBoxInnerGlow = 0xd3d0 + 0x120;
+constexpr size_t kAssetGlowBoxSmall = 0xd3d0 + 0x140;
+constexpr size_t kAssetRoundedBox = 0xd3d0 + 0x180;
+constexpr size_t kAssetSmallText = 0x10bbc;
 
 // Portal sounds: two parts of the portal whoosh the user chose (tools/build-portal-sounds.py),
 // played with Windows audio. The game's own UI sound player (evidence:
@@ -149,19 +149,19 @@ void PlayEffect(const uint8_t* wav) {
 }
 #ifdef TOWN_PORTAL_DEV
 // Dev audition: Ctrl+Shift+1..0 play these FbUiSounds entries (offsets from
-// fastTravelTriggered at bundle+0x129f0; C:\temp\enshrouded-re\out\sound-fasttravel\types-dump.txt).
+// fastTravelTriggered at bundle+0x12ba0; C:\temp\enshrouded-re\out\sound-fasttravel\types-dump.txt).
 struct SoundCandidate { const char* name; int32_t delta; };
 constexpr SoundCandidate kSoundCandidates[] = {
     {"1 map fastTravelTriggered", 0},
-    {"2 map goToHomeBase", 0x12a10 - 0x129f0},
-    {"3 events magicBarrierUnlocked", 0x12100 - 0x129f0},
-    {"4 events ancientBarrierUnlocked", 0x12110 - 0x129f0},
-    {"5 events secretDoorUnlocked", 0x12150 - 0x129f0},
-    {"6 events flameLevelUp", 0x120f0 - 0x129f0},
-    {"7 events locationDiscovery", 0x12080 - 0x129f0},
-    {"8 menu flameAltarOpen", 0x12240 - 0x129f0},
-    {"9 menu activatePersonalProgression", 0x12480 - 0x129f0},
-    {"0 menu shroudForgeOpen", 0x12550 - 0x129f0},
+    {"2 map goToHomeBase", 0x12bc0 - 0x12ba0},
+    {"3 events magicBarrierUnlocked", 0x122b0 - 0x12ba0},
+    {"4 events ancientBarrierUnlocked", 0x122c0 - 0x12ba0},
+    {"5 events secretDoorUnlocked", 0x12300 - 0x12ba0},
+    {"6 events flameLevelUp", 0x122a0 - 0x12ba0},
+    {"7 events locationDiscovery", 0x12230 - 0x12ba0},
+    {"8 menu flameAltarOpen", 0x123f0 - 0x12ba0},
+    {"9 menu activatePersonalProgression", 0x12630 - 0x12ba0},
+    {"0 menu shroudForgeOpen", 0x12700 - 0x12ba0},
 };
 bool g_auditionDown[10]{};
 #endif
@@ -403,7 +403,7 @@ void DrawNineSliceBox(void* widgetRaw, size_t assetOffset, float x, float y, flo
     g_nineSlice(widgetRaw, rect, assets + assetOffset, borders, PackColor(abgr, alpha, bright));
 }
 
-// FbUiBundle.namedStyles (+0x10a0c, UiCharacterStyle entries of 0x58 bytes: fontSize at
+// FbUiBundle.namedStyles (+0x10bbc, UiCharacterStyle entries of 0x58 bytes: fontSize at
 // +0x20, dropShadow at +0x44): the game's interaction prompts use the outlined default
 // style, larger than the default text.
 constexpr size_t kStyleOutline = kAssetSmallText + 0x58;
@@ -1580,7 +1580,7 @@ bool Init(const GreeneyeHost* host, void** uiRoot) {
         "48 8B C4 48 89 78 10 4C 89 70 18 4C 89 78 20 55 48 8B EC 48 81 EC 80 00 00 00 48 8B 79 10 4C 8B F2 4C 8B F9 83 7F 68 00", nullptr));
     // The map's fast-travel handler loads the sound reference with movups [rax+disp32].
     if (auto* site = static_cast<uint8_t*>(host->find(
-            "48 8B 0D ?? ?? ?? ?? 48 8D 55 A0 48 8B 81 C8 00 00 00 0F 10 80 ?? ?? ?? ?? 0F 29 45 A0 E8 ?? ?? ?? ?? 41 80 BF", nullptr))) {
+            "48 8B 0D ?? ?? ?? ?? 48 8D 55 A0 48 8B 81 C8 00 00 00 0F 10 80 ?? ?? ?? ?? 0F 29 45 A0 E8 ?? ?? ?? ??", nullptr))) {
         int32_t offset = 0;
         host->read(site + 0x15, &offset, sizeof(offset));
         if (offset > 0 && offset < 0x20000) g_fastTravelSound = uint32_t(offset);
@@ -1787,7 +1787,7 @@ void AppendPresentationStatus(char* json,uint32_t capacity) {
     uint8_t* entries=nullptr;uint32_t count=0;
     __try {
         if(assets) {
-            auto* array=assets+0xff88;
+            auto* array=assets+0x10138;
             count=at<uint32_t>(array,4);
             if(count<=64&&at<int32_t>(array,0))entries=array+at<int32_t>(array,0);
         }

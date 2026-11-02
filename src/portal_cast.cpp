@@ -27,7 +27,7 @@ std::atomic<uint64_t> g_started{0},g_cancelled{0},g_requests{0},g_applied{0},g_m
 std::atomic<uint32_t> g_jointCount{0},g_handle{0};
 uint64_t g_lastBind=0;
 // ClientPlayerInput (reflection hash low32 0x9621e4c3), filled each frame by
-// 0x2437c0 from the local player's input builder at 0x3ab840 (evidence:
+// 0x2476f0 from the local player's input builder at 0x3b1d40 (evidence:
 // C:\temp\enshrouded-re\out\movement-lock\evidence.txt). The server receives
 // this data, so zeroing it here also stops movement on a dedicated server.
 using InputFn=uint64_t(*)(uint8_t*,void*,void*,void*,void*,void*,void*,uint64_t,void*,void*,uint64_t,void*);
@@ -130,7 +130,9 @@ bool BindSafe(void* client){
   void* ref[3]{};g_component(ref,storage,0xb4c3563e,local);
   if(!ref[0])return false;
   uint32_t handle=get<uint32_t>(ref[0],0);uint32_t index=handle&0xffffff;
-  auto* system=get<uint8_t*>(world,0x618);if(!system||!handle||index>=get<uint16_t>(system,0x78))return false;
+  // UiWorld's animation-system pointer moved +0x10 in 1.0.1.0. Live verification
+  // matches this component's generation, pool capacity and 102-joint graph.
+  auto* system=get<uint8_t*>(world,0x628);if(!system||!handle||index>=get<uint16_t>(system,0x78))return false;
   auto* generations=get<uint8_t*>(system,0x50);auto* pool=get<uint8_t*>(system,0x38);
   if(!generations||!pool||(handle>>24)-1!=uint32_t(generations[index])%255)return false;
   auto* graph=pool+size_t(index)*0xfd0;
@@ -143,10 +145,12 @@ bool BindSafe(void* client){
 bool Init(const GreeneyeHost* host){
  auto* exe=reinterpret_cast<uint8_t*>(GetModuleHandleW(nullptr));
  if(!greeneye::HostHasHooks(host)||!host->redirectCall||!host->read||!build::Client())return false;
- auto* site=exe+0x92458a;
- if(!hooks::CheckCall(host->read,site,exe+0x91c260))return false;
- g_component=reinterpret_cast<ComponentFn>(exe+0x9a75d0);
- g_stack=reinterpret_cast<StackFn>(exe+0x92cde0);
+ auto* site=exe+0x92efba;
+ if(!hooks::CheckCall(host->read,site,exe+0x926d00))return false;
+ g_component=reinterpret_cast<ComponentFn>(exe+0x9b2e60);
+ auto* stack=host->find?host->find(hooks::stackPattern,nullptr):nullptr;
+ if(!stack){if(host->log)host->log("Town Portal: pose-stack accessor unavailable; cast animation disabled");return false;}
+ g_stack=reinterpret_cast<StackFn>(stack);
  g_next=reinterpret_cast<EvaluateFn>(host->redirectCall(site,reinterpret_cast<void*>(EvaluateHook)));
  auto* input=exe+hooks::inputCallRva;
  if(hooks::CheckInputCall(host->read,input,exe+hooks::inputTargetRva))
