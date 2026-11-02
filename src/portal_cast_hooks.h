@@ -4,9 +4,13 @@
 #include <cstring>
 
 namespace portal::casting::hooks {
+// Pose-stack accessor: positive stack depth returns rotations, translations and
+// scales with a joint count per array. Resolve by signature after game updates.
+inline constexpr char stackPattern[] =
+    "4C 8B C1 4C 8B CA 48 8B 4A 30 48 85 C9 75 44 48 8D 05 ?? ?? ?? ?? 49 89 00 48 8D 05 ?? ?? ?? ?? 49 C7 40 08 00 01 00 00";
 inline constexpr char inputPattern[] =
     "4C 89 6C 24 28 48 89 44 24 20 E8 ?? ?? ?? ?? 48 8B 9C 24 98 01 00 00";
-inline constexpr uint32_t inputCallRva = 0x3abd23, inputTargetRva = 0x2437c0;
+inline constexpr uint32_t inputCallRva = 0x3b2223, inputTargetRva = 0x2476f0;
 inline constexpr size_t inputCallOffset = 10;
 using Read = void (*)(const void*, void*, size_t);
 

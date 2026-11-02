@@ -30,21 +30,15 @@ T field(const void* p, size_t offset) {
 
 // Verified Enshrouded build 1269579 ECS & terrain signatures
 constexpr char kPlayerPattern[] =
-    "48 89 4C 24 08 55 41 56 48 8D AC 24 E8 F5 FF FF 48 81 EC 18 0B 00 00 41 B8 A8 05 00 00 "
-    "48 8D 55 00 4C 8B F1 E8 ?? ?? ?? ?? 41 B8 A8 05 00 00 48 8D 55 00 49 8B CE E8 ?? ?? ?? ?? "
-    "84 C0 0F 84 ?? ?? ?? ??";
+    "48 89 4C 24 08 55 53 48 8D AC 24 E8 F5 FF FF 48 81 EC 18 0B 00 00 41 B8 B0 05 00 00 48 8D 55 F0 48 8B D9 E8 ?? ?? ?? ?? 41 B8 B0 05 00 00 48 8D 55 F0 48 8B CB E8 ?? ?? ?? ?? 84 C0 0F 84 ?? ?? ?? ??";
 constexpr char kApplyPattern[] =
     "40 55 56 48 8D AC 24 A8 FD FF FF 48 81 EC 58 03 00 00 41 B8 B0 01 00 00 48 8D 55 90 "
     "48 8B F1 E8 ?? ?? ?? ?? 41 B8 B0 01 00 00 48 8D 55 90 48 8B CE E8 ?? ?? ?? ?? 84 C0 "
     "0F 84 ?? ?? ?? ?? 48 89 9C 24 70 03 00 00";
 constexpr char kNextPattern[] =
-    "40 57 48 83 EC 20 4C 8B 01 48 8B FA 8B 41 08 4C 8B C9 49 3B 80 30 08 00 00 75 ?? 32 C0 "
-    "48 83 C4 20 5F C3 41 0F B6 80 B0 04 00 00 49 8D 88 70 04 00 00 48 89 5C 24 38 45 33 DB "
-    "41 0F B7 98 BA 04 00 00";
+    "40 57 48 83 EC 20 4C 8B 01 48 8B FA 8B 41 08 4C 8B C9 49 3B 80 38 08 00 00 75 ?? 32 C0 48 83 C4 20 5F C3 41 0F B6 80 B0 04 00 00 49 8D 88 70 04 00 00 48 89 5C 24 38 45 33 DB 41 0F B7 98 BA 04 00 00 48 89 6C 24 40";
 constexpr char kEntityPattern[] =
-    "8B 41 08 4C 8B C2 85 C0 75 ?? 89 02 48 8B C2 C3 8D 50 FF 48 8B 01 48 03 D2 48 8B 88 "
-    "28 08 00 00 8B 04 D1 41 89 00 49 8B C0 C3 CC CC CC CC CC CC 8B 05 ?? ?? ?? ?? 48 85 C9 "
-    "74 ?? 8B 41 10 C3 CC";
+    "8B 41 08 4C 8B C2 85 C0 75 ?? 89 02 48 8B C2 C3 8D 50 FF 48 8B 01 48 03 D2 48 8B 88 30 08 00 00 8B 04 D1 41 89 00 49 8B C0 C3 CC CC CC CC CC CC 8B 05 ?? ?? ?? ?? 48 85 C9 74 ?? 8B 41 10 C3 CC 48 89 5C 24 08";
 constexpr char kRayPattern[] =
     "48 8B C4 48 89 50 10 55 53 57 41 54 48 8D A8 58 FF FF FF 48 81 EC 88 01 00 00 41 0F 28 08 "
     "48 8B F9 F2 0F 10 05 ?? ?? ?? ?? 49 8B D9 0F 29 70 A8 4D 8B E0 41 0F 28 31 0F 29 78 98 "
@@ -1038,14 +1032,14 @@ bool Init(const GreeneyeHost* host) {
         Log("Town Portal: missing host travel signatures");
         return false;
     }
-    if (!CallMatches(host, p + 0x36, n) || !CallMatches(host, p + 0x21f6, n) ||
+    if (!CallMatches(host, p + 0x35, n) || !CallMatches(host, p + 0x11c6, n) ||
         !CallMatches(host, a + 0x31, n) || !CallMatches(host, a + 0x7be, n)) {
         Log("Town Portal: iterator call sites did not match");
         return false;
     }
 
-    g_playerFirst = reinterpret_cast<NextFn>(host->redirectCall(p + 0x36, reinterpret_cast<void*>(PlayerFirst)));
-    g_playerMore = reinterpret_cast<NextFn>(host->redirectCall(p + 0x21f6, reinterpret_cast<void*>(PlayerMore)));
+    g_playerFirst = reinterpret_cast<NextFn>(host->redirectCall(p + 0x35, reinterpret_cast<void*>(PlayerFirst)));
+    g_playerMore = reinterpret_cast<NextFn>(host->redirectCall(p + 0x11c6, reinterpret_cast<void*>(PlayerMore)));
     g_applyFirst = reinterpret_cast<NextFn>(host->redirectCall(a + 0x31, reinterpret_cast<void*>(ApplyFirst)));
     g_applyMore = reinterpret_cast<NextFn>(host->redirectCall(a + 0x7be, reinterpret_cast<void*>(ApplyMore)));
     g_receive = reinterpret_cast<ReceiveFn>(host->hook(r, reinterpret_cast<void*>(ReceiveHook), 13, nullptr, 0));

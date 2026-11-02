@@ -93,8 +93,8 @@ bool EnsureDownload(uint8_t* root) {
     const uint32_t frames=At<uint32_t>(graphics,0x440);
     if(!heap||!frames||frames>8||uint64_t(frames)*kShareStripeBytes>At<uint32_t>(heap,0x14)){gpu.error=4;return false;}
     alignas(8) uint8_t desc[24]{};At<void*>(desc,8)=heap;At<uint64_t>(desc,16)=kShareStripeBytes;
-    // RootCreate (0xfff90, store at 0xffff3) saves its allocator at root+0.
-    gpu.download=Native<void*(*)(void*,const void*)>(0xfc1550)(At<void*>(root,0),desc);
+    // RootCreate (0x101dd0, store at 0xffff3) saves its allocator at root+0.
+    gpu.download=Native<void*(*)(void*,const void*)>(0xfda6c0)(At<void*>(root,0),desc);
     if(!gpu.download){gpu.error=5;return false;}
     return true;
 }
@@ -106,7 +106,7 @@ bool UploadPixels(uint8_t* root,const ImageView& target,const std::vector<uint8_
     void* uploadPool=At<void*>(uploadGraphics,0x5d0);
     if(!uploadPool||At<uint64_t>(uploadPool,0x10)<sharing::kRawBytes)return false;
     alignas(16) uint8_t upload[0x80]{};uint64_t access=0x400;
-    Native<void*(*)(void*,void*,const ImageView*,uint8_t,const uint64_t*)>(0x1018150)
+    Native<void*(*)(void*,void*,const ImageView*,uint8_t,const uint64_t*)>(0x1032070)
         (upload,At<void*>(root,0x128),&target,7,&access);
     // Native whole-image uploads return mapped pointer, byte size, row pitch.
     const size_t rowBytes=kSnapshotWidth*8;const uint64_t pitch=At<uint64_t>(upload,0x10),bytes=At<uint64_t>(upload,8);
@@ -169,7 +169,7 @@ void SharedGpuTick() {
     gpu.root=root;
     if(gpu.download){
         uint64_t result[5]{};
-        if(Native<uint8_t(*)(void*,void*)>(0xfe6d80)(result,gpu.download)){
+        if(Native<uint8_t(*)(void*,void*)>(0x10003c0)(result,gpu.download)){
             const uint64_t tag=result[3];gpu.inFlight=0;
             if(g_download.image&&tag==gpu.tag&&result[0]&&result[1]>=kShareStripeBytes&&
                (homecache::Valid(g_download.home)||g_download.image->epoch==sharing::Epoch())){
@@ -253,7 +253,7 @@ void SharedGpuRecord(void* scope) {
     sharing::native::Region region{};uint8_t status[8]{};
     region.y=job.row;region.width=kSnapshotWidth;region.height=kShareRows;
     uint64_t cookie[2]={++gpu.tag,0};
-    Native<void*(*)(void*,void*,void*,const ImageView*,const void*,const void*)>(0x1015860)
+    Native<void*(*)(void*,void*,void*,const ImageView*,const void*,const void*)>(0x102f710)
         (scope,status,gpu.download,&g_composite->snapshots[job.slot].image,&region,cookie);
     if(status[0]==0)gpu.inFlight=gpu.tag;
 }
