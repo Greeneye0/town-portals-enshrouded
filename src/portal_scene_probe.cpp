@@ -177,19 +177,26 @@ void AllocateSnapshots(uint8_t* root) {
     alignas(16) uint8_t scope[0x180]{},plan[0x20]{},desc[0x30]{},result[16]{};
     g_scope(scope,At<void*>(root,0x128),0);
     g_plan(plan,scope,At<uint32_t>(root,0x270),0,1);
+    // Usage 0x07: copied from (readback), copied to (capture, upload), sampled; no render target
+    // (see SnapshotScratch). The capture draws into the scratch image, usage 0x4f as before.
     for(auto& snapshot:c.snapshots){
-        ImageDesc(desc,kSnapshotWidth,kSnapshotHeight,0x61,0x4f); // also readback and upload (the home snapshot cache)
+        ImageDesc(desc,kSnapshotWidth,kSnapshotHeight,0x61,0x07);
         g_image(plan,&snapshot.image,desc);
     }
+    auto& scratch=*g_snapshotScratch;
+    scratch={};
+    ImageDesc(desc,kSnapshotWidth,kSnapshotHeight,0x61,0x4f);
+    g_image(plan,&scratch.image,desc);
     g_commit(scope,result,&c.snapshotTicket,At<void*>(root,0x160));
     c.snapshotError=result[0];
     g_end(scope);
-    bool ready=!c.snapshotError&&c.snapshotTicket;
+    bool ready=!c.snapshotError&&c.snapshotTicket&&scratch.image.context;
     for(const auto& snapshot:c.snapshots)ready=ready&&snapshot.image.context;
     if(!ready){
         if(c.snapshotTicket)g_release(At<void*>(root,0x160),&c.snapshotTicket);
         for(auto& snapshot:c.snapshots)snapshot={};
         c.snapshotTicket=0;
+        scratch={};
     }
     char line[120]{};
     std::snprintf(line,sizeof(line),ready?"Town Portal: portal snapshots ready (%ux%u)":"Town Portal: portal snapshots unavailable (error %u)",
@@ -993,6 +1000,24 @@ bool SnapshotFrame(const void* input,uint8_t* out,uint64_t now) {
     }
     return false;
 }
+// A whole snapshot image copied to another on the GPU, recorded the way the game copies one
+// texture into another (2026-11-02 build, 12ba10): both declared for transfer (layout 8 read
+// 0x200000, layout 9 write 0x100000000), the barriers flushed, then the CopyTexture packet
+// (148780: list, destination, its layout, source, its layout, regions). A region is a source
+// and a destination Region (aspect, mip, layer, layers, offset, extent).
+void CopySnapshotImage(void* scope,const ImageView& from,const ImageView& to) {
+    const uint64_t read=0x200000,write=0x100000000ull;
+    Native<void(*)(void*,const void*,uint8_t,const uint64_t*)>(0x4cf00)(scope,&from,8,&read);
+    Native<void(*)(void*,const void*,uint8_t,const uint64_t*)>(0x4cf00)(scope,&to,9,&write);
+    Native<void(*)(void*,uint64_t)>(0x47a70)(scope,0x7ffffffff);
+    sharing::native::Region regions[2]{};
+    regions[0].width=kSnapshotWidth;regions[0].height=kSnapshotHeight;
+    struct {const void* regions;uint64_t count;} list{regions,1};
+    void* source=Native<void*(*)(const ImageView*)>(0x1030820)(&from);
+    void* destination=Native<void*(*)(const ImageView*)>(0x1030820)(&to);
+    if(!source||!destination)return;
+    Native<void(*)(void*,void*,uint8_t,void*,uint8_t,const void*)>(0x148780)(At<void*>(scope,0x10),destination,9,source,8,&list);
+}
 void SnapshotCapture(void* scope,uint8_t* state,ImageView frame,const ImageView& sceneColor,float exposure) {
     auto& c=*g_composite;
     auto& r=g_snapshotRequest;
@@ -1030,6 +1055,11 @@ void SnapshotCapture(void* scope,uint8_t* state,ImageView frame,const ImageView&
     }
     auto& snapshot=c.snapshots[slot];
     if(!snapshot.image.context)return;
+    // Draw into the scratch render target and copy it into the slot; a slot image made as a
+    // render target (kept from a build before the scratch, across a hot reload) is drawn into.
+    const bool scratch=g_snapshotScratch->image.context!=0;
+    if(!scratch&&!(InspectImage(snapshot.image).usage&8))return;
+    const ImageView& drawTarget=scratch?g_snapshotScratch->image:snapshot.image;
     const float* view=&At<float>(state,0x1000);
     const float* projection=&At<float>(state,0x10c0);
     const math::Vec3 right{r.end.rx,0,r.end.rz},up{0,1,0},normal{r.end.nx,0,r.end.nz};
@@ -1067,7 +1097,7 @@ void SnapshotCapture(void* scope,uint8_t* state,ImageView frame,const ImageView&
     Native<void(*)(void*,const void*,uint8_t,const uint64_t*)>(0x4cf00)(scope,&frame,7,&access);
     Native<void(*)(void*,const void*,uint8_t,const uint64_t*)>(0x4cf00)(scope,&depth,7,&access);
     const uint8_t attachment[]={0,1,0};
-    Native<void(*)(void*,const void*,const void*,const char*)>(0x6c270)(scope,&snapshot.image,attachment,"town portal snapshot");
+    Native<void(*)(void*,const void*,const void*,const char*)>(0x6c270)(scope,&drawTarget,attachment,"town portal snapshot");
     Native<void(*)(void*,uint64_t)>(0x47a70)(scope,0x7ffffffff);
     alignas(8) uint8_t bindings[3][0x28]{};
     for(int i=0;i<2;++i){bindings[i][0]=3;At<ImageView>(bindings[i],8)=i?depth:frame;bindings[i][0x18]=7;}
@@ -1083,6 +1113,7 @@ void SnapshotCapture(void* scope,uint8_t* state,ImageView frame,const ImageView&
     }
     Native<void(*)(void*)>(0x6c890)(scope);
     if(!drawn)return;
+    if(scratch)CopySnapshotImage(scope,drawTarget,snapshot.image);
     g_snapshotShroud[slot]=r.shroud;
     taken.image=snapshot.image;taken.cx=origin.x;taken.cy=origin.y;taken.cz=origin.z;
     taken.exposure=exposure;taken.tick=GetTickCount64();taken.valid=true;
@@ -1334,6 +1365,8 @@ bool Init(const GreeneyeHost* host) {
     if(!g_sharedGpu)return false;
     g_snapshotCaptureHash=static_cast<uint32_t*>(host->keep("portal-snapshot-capture-hash-v1",sizeof(uint32_t)));
     if(!g_snapshotCaptureHash)return false;
+    g_snapshotScratch=static_cast<SnapshotScratch*>(host->keep("portal-snapshot-scratch-v1",sizeof(SnapshotScratch)));
+    if(!g_snapshotScratch)return false;
     g_world=static_cast<WorldTemplate*>(host->keep("portal-owned-world-v1",sizeof(WorldTemplate)));
     g_mirrors=static_cast<MirrorState*>(host->keep("portal-owned-instances-v2",sizeof(MirrorState)));
     g_instanceCreate=reinterpret_cast<InstanceCreateFn>(host->find(signatures::instanceCreate,nullptr));

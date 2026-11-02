@@ -74,6 +74,13 @@ struct CompositeState {
     uint32_t renderedCount{};
 };
 CompositeState* g_composite{};
+// The render target a snapshot is drawn into before it is copied into its slot. The slots are
+// plain textures (sampled, copied to and from), like the game's own UI textures: on some PCs a
+// render-target image lost its pixels between frames, so every picture, even an uploaded
+// default one, read back as zeros and the portals showed only their swirl (an RX 6800 and a
+// GTX 1060, 2026-11-02). Kept apart from CompositeState so its layout stays the same.
+struct SnapshotScratch {ImageView image{};uint32_t ticket{},error{};};
+SnapshotScratch* g_snapshotScratch{};
 // Separate kept value: changing the capture filter invalidates baked pixels
 // without changing CompositeState's layout or freeing its in-flight GPU images.
 uint32_t* g_snapshotCaptureHash{};
@@ -128,6 +135,7 @@ void CompositeRelease() {
     CompositeReleaseObject(g_composite->capturePipeline);
     if(g_composite->snapshotTicket&&g_target&&g_target->root)
         g_release(At<void*>(reinterpret_cast<void*>(g_target->root),0x160),&g_composite->snapshotTicket);
+    if(g_snapshotScratch)*g_snapshotScratch={}; // allocated under snapshotTicket
     CompositeReleaseObject(g_composite->layout);
     if(g_composite->bindings&&g_composite->graphics)
         Native<void(*)(void*,void**)>(0xfe8680)(g_composite->graphics,&g_composite->bindings);
