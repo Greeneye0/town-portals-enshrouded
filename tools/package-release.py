@@ -20,8 +20,9 @@ if destination.exists():
 destination.mkdir(parents=True)
 dll = root / "bin/loader/town-portal.dll"
 assert json.loads((root / "bin/loader/mod.json").read_text())["version"] == version, "build.bat first"
-# The Greeneye loader as installed beside the game and the dedicated server (1.2.0, identical).
-loader = pathlib.Path(r"C:\Program Files (x86)\Steam\steamapps\common\Enshrouded\dbgcore.dll")
+# The released Greeneye loader 1.2.0 (the game folder may hold a newer development one).
+loader = root / "dist/TownPortals-1.0.6/client/dbgcore.dll"
+assert hashlib.sha256(loader.read_bytes()).hexdigest().startswith("7b97b41bd89d4652"), "not loader 1.2.0"
 for side in ("client", "server"):
     folder = destination / side / "greeneye/town-portal"
     folder.mkdir(parents=True)

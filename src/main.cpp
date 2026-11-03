@@ -1805,6 +1805,13 @@ void RunGameplayTick(void* app, std::vector<portal::PortalInstance>& outPortals,
     g_hostMod = EnsureHostHandshake(gameClient, currentWorld);
     if (g_hostMod == HostMod::present) AskHostRules(gameClient, currentWorld);
 
+    // Our open portal is rebroadcast even without a position (dead, loading): the others close a
+    // portal they have not heard of for 90 s (CloseSilentPortals).
+    if (gameClient && GetTickCount64() >= g_lastBroadcastTick + 12000) {
+        portal::PortalInstance own{};
+        if (portal::travel::GetPortalByOwner(portal::travel::LocalSteamAccount(), own) && !own.closing)
+            BroadcastPortalOpen(gameClient, own);
+    }
     if (!uiClient || !gotPos) return;
     outPx = px;
     outPy = py;
@@ -1864,6 +1871,10 @@ void RunGameplayTick(void* app, std::vector<portal::PortalInstance>& outPortals,
         TryOpenPortalAtPlayer(gameClient, uiClient, px, py, pz, dirX, dirZ);
     }
 
+    // A friend who logged off sends no close: their portal goes once they have been silent for
+    // 90 s, over 7 of their 12 s rebroadcasts (Lomack's stayed at the base after he left,
+    // 2026-11-02).
+    portal::travel::CloseSilentPortals(portal::travel::LocalSteamAccount(), 90000);
     portal::travel::GetActivePortals(outPortals);
     portal::markers::Publish(uiClient, outPortals, GetTickCount64());
     if (outPortals.empty()) return;
@@ -2310,7 +2321,7 @@ GREENEYE_MOD_START {
     }
 
     if (serverSide) {
-        Log("Town Portals 1.0.7: server companion loaded");
+        Log("Town Portals 1.0.8: server companion loaded");
         return true;
     }
 
@@ -2373,7 +2384,7 @@ GREENEYE_MOD_START {
     portal::casting::Init(host);
     LogGraphicsAdapters();
 
-    Log("Town Portals 1.0.7: press T (OpenPortalKey in town-portal.ini) to open a portal to your Preferred Spawn Flame Altar");
+    Log("Town Portals 1.0.8: press T (OpenPortalKey in town-portal.ini) to open a portal to your Preferred Spawn Flame Altar");
     return true;
 }
 

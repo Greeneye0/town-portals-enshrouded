@@ -1364,6 +1364,30 @@ bool ClosePortalByOwner(uint64_t ownerAccount, uint64_t portalId) {
     return closedAny;
 }
 
+void CloseSilentPortals(uint64_t localAccount, uint64_t silentMs) {
+    const uint64_t now = GetTickCount64();
+    uint64_t closed[kMaxPortals]{};
+    size_t count = 0;
+    {
+        std::lock_guard guard(g_lock);
+        for (auto& slot : g_portals) {
+            if (!slot.active || slot.ownerAccount == localAccount || !slot.lastSyncTick ||
+                now - std::min(now, slot.lastSyncTick) < silentMs)
+                continue;
+            slot.active = false;
+            slot.closing = true;
+            slot.closedTick = now;
+            closed[count++] = slot.portalId;
+        }
+    }
+    for (size_t i = 0; i < count; ++i) {
+        char line[160]{};
+        std::snprintf(line, sizeof(line), "Town Portal: closed portal %llu: its owner has not been heard from for %llu s (left the world)",
+                      static_cast<unsigned long long>(closed[i]), static_cast<unsigned long long>(silentMs / 1000));
+        Log(line);
+    }
+}
+
 void ClearAllPortals() {
     // Leaving or switching worlds: the entity seen while hosting the last one is not this
     // player's in the next (a stale one made the field check trace into the player's own body).

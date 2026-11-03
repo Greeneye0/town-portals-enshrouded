@@ -49,6 +49,9 @@ void GatherEcsRemotePlayers(std::vector<RemotePlayerPos>& outPlayers);
 void UpsertPortal(const PortalInstance& instance);
 bool ClosePortalByOwner(uint64_t ownerAccount, uint64_t portalId = 0);
 void ClearAllPortals();
+// Closes other players' portals not heard of for silentMs: an owner who leaves the world sends
+// no close, but every open portal is rebroadcast by its owner every 12 s.
+void CloseSilentPortals(uint64_t localAccount, uint64_t silentMs);
 void GetActivePortals(std::vector<PortalInstance>& outPortals);
 bool GetPortalByOwner(uint64_t ownerAccount, PortalInstance& outPortal);
 bool MarkOwnerVisitedBase(uint64_t ownerAccount);

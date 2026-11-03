@@ -120,7 +120,7 @@ void CompositeReleaseObject(void*& object) {
     EnterCriticalSection(lock);
     if(--At<uint16_t>(object,0)==0){
         auto* pending=At<uint8_t*>(graphics,0x580);
-        Native<void(*)(void*,void**)>(0x1002c40)(pending?pending+0x20:graphics+0x510,&object);
+        Native<void(*)(void*,void**)>(0x1002c20)(pending?pending+0x20:graphics+0x510,&object);
     }
     LeaveCriticalSection(lock);object=nullptr;
 }
@@ -138,7 +138,7 @@ void CompositeRelease() {
     if(g_snapshotScratch)*g_snapshotScratch={}; // allocated under snapshotTicket
     CompositeReleaseObject(g_composite->layout);
     if(g_composite->bindings&&g_composite->graphics)
-        Native<void(*)(void*,void**)>(0xfe8680)(g_composite->graphics,&g_composite->bindings);
+        Native<void(*)(void*,void**)>(0xfe8660)(g_composite->graphics,&g_composite->bindings);
     *g_composite={};
 }
 bool CompositePipelines(void* device);
@@ -155,7 +155,7 @@ bool CompositeCreate() {
     alignas(8) uint8_t entries[3][16]{};
     for(int i=0;i<3;++i){entries[i][1]=i==2?1:3;At<uint16_t>(entries[i],2)=2;}
     NativeSpan span{entries,3};
-    c.bindings=Native<void*(*)(void*,const NativeSpan*)>(0xfd5440)(c.graphics,&span);
+    c.bindings=Native<void*(*)(void*,const NativeSpan*)>(0xfd5420)(c.graphics,&span);
     if(!c.bindings){c.error=1;return false;}
     c.stage=2;
     alignas(8) uint8_t layout[0x30]{};
@@ -167,7 +167,7 @@ bool CompositeCreate() {
     // frame: anti-aliasing jitter x, y and 1 when drawn into the game's scene colour. Then at
     // 1-4 the snapshot's rows and info, at 5 the cast effect (hand in portal metres, effect).
     const uint8_t attributes[]={0,1,6,3,7,1,8,3,9,3,10,3,11,3,12,3,13,3,1,3,2,3,3,3,4,3,5,3};span={attributes,14};
-    c.vertices=Native<void*(*)(void*,const NativeSpan*)>(0xfe53d0)(c.graphics,&span);
+    c.vertices=Native<void*(*)(void*,const NativeSpan*)>(0xfe53b0)(c.graphics,&span);
     if(!c.vertices||At<uint8_t>(c.vertices,0x22)!=kVertexFloats*4){c.error=3;return false;}
     c.stage=3;
     if(!CompositePipelines(device))return false;
@@ -248,7 +248,7 @@ void CompositeRefreshPipelines() {
 uint8_t* CompositeCommand(void* pass,uint8_t opcode,uint16_t size) {
     auto* commands=At<uint8_t*>(pass,0x10);auto* block=At<uint8_t*>(commands,0x28);
     if(At<uint64_t>(block,0x10)-At<uint64_t>(block,8)<size){
-        auto* next=Native<uint8_t*(*)(void*)>(0xfc60d0)(At<void*>(commands,0));
+        auto* next=Native<uint8_t*(*)(void*)>(0xfc60b0)(At<void*>(commands,0));
         At<void*>(block,0)=next;At<void*>(commands,0x28)=next;block=next;
     }
     auto* out=At<uint8_t*>(block,8);At<uint8_t*>(block,8)+=size;++At<uint64_t>(block,0x18);
@@ -380,7 +380,7 @@ void CompositeRecord(void* pass,void* state,const ImageView& depth,bool inFrame,
         for(int i=0;i<2;++i){bindings[i][0]=3;At<ImageView>(bindings[i],8)=i?depth:destination;bindings[i][0x18]=7;}
         bindings[2][0]=1;At<void*>(bindings[2],8)=At<void*>(reinterpret_cast<void*>(g_world->root),0x16e28);
         alignas(8) uint8_t set[0x20]{};set[0]=3;At<void*>(set,8)=c.bindings;At<void*>(set,0x10)=bindings;At<uint64_t>(set,0x18)=3;
-        return Native<void*(*)(void*,void*,const void*)>(0x102a570)(At<void*>(graph,0),At<void*>(graph,0x10),set);
+        return Native<void*(*)(void*,void*,const void*)>(0x102a550)(At<void*>(graph,0),At<void*>(graph,0x10),set);
     };
     void* shared=makeDescriptor(g_target->color);
     void* descriptor=shared;
@@ -453,14 +453,14 @@ void CompositeRender(void* scene,void* context) {
     Native<ImageView*(*)(ImageView*,void*)>(0x125e40)(&depth,state);
     alignas(16) uint8_t pass[0x1200]{};
     c.stage=5;
-    Native<void*(*)(void*,void*,const char*)>(0x1026df0)(pass,At<void*>(context,0x10),"portal depth composite");
+    Native<void*(*)(void*,void*,const char*)>(0x1026dd0)(pass,At<void*>(context,0x10),"portal depth composite");
     uint64_t access=0x400;
     Native<void(*)(void*,const void*,uint8_t,const uint64_t*)>(0x4cf00)(pass,&g_target->color,7,&access);
     Native<void(*)(void*,const void*,uint8_t,const uint64_t*)>(0x4cf00)(pass,&depth,7,&access);
     const uint8_t attachment[]={0,1,0};
     Native<void(*)(void*,const void*,const void*,const char*)>(0x6c270)(pass,&c.image,attachment,"portal depth composite");
     CompositeRecord(pass,state,depth,false,slots,count,now);
-    Native<void(*)(void*)>(0x1027590)(pass);
+    Native<void(*)(void*)>(0x1027570)(pass);
     c.stage=6;++c.frames;c.tick=GetTickCount64();c.portal=slots[0].portal.portalId;c.field=slots[0].field;
 }
 void CompositeRenderGuard(void* scene,void* context) {

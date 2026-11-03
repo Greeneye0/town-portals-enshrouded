@@ -1013,8 +1013,8 @@ void CopySnapshotImage(void* scope,const ImageView& from,const ImageView& to) {
     sharing::native::Region regions[2]{};
     regions[0].width=kSnapshotWidth;regions[0].height=kSnapshotHeight;
     struct {const void* regions;uint64_t count;} list{regions,1};
-    void* source=Native<void*(*)(const ImageView*)>(0x1030820)(&from);
-    void* destination=Native<void*(*)(const ImageView*)>(0x1030820)(&to);
+    void* source=Native<void*(*)(const ImageView*)>(0x1030800)(&from);
+    void* destination=Native<void*(*)(const ImageView*)>(0x1030800)(&to);
     if(!source||!destination)return;
     Native<void(*)(void*,void*,uint8_t,void*,uint8_t,const void*)>(0x148780)(At<void*>(scope,0x10),destination,9,source,8,&list);
 }
@@ -1104,7 +1104,7 @@ void SnapshotCapture(void* scope,uint8_t* state,ImageView frame,const ImageView&
     bindings[2][0]=1;At<void*>(bindings[2],8)=At<void*>(reinterpret_cast<void*>(g_world->root),0x16e28);
     alignas(8) uint8_t set[0x20]{};set[0]=3;At<void*>(set,8)=c.bindings;At<void*>(set,0x10)=bindings;At<uint64_t>(set,0x18)=3;
     auto* graph=At<uint8_t*>(scope,0);
-    void* descriptor=Native<void*(*)(void*,void*,const void*)>(0x102a570)(At<void*>(graph,0),At<void*>(graph,0x10),set);
+    void* descriptor=Native<void*(*)(void*,void*,const void*)>(0x102a550)(At<void*>(graph,0),At<void*>(graph,0x10),set);
     auto* command=CompositeCommand(scope,5,0x10);At<void*>(command,8)=c.capturePipeline;
     command=CompositeCommand(scope,7,0x38);At<void*>(command,8)=c.layout;At<void*>(command,0x10)=descriptor;At<uint16_t>(command,0x30)=1;
     bool drawn=false;
@@ -1334,20 +1334,20 @@ bool Init(const GreeneyeHost* host) {
     }
     const uint8_t registerBytes[]={0x48,0x89,0x5c,0x24,0x08,0x48,0x89,0x6c,0x24,0x10,0x4c,0x89,0x4c,0x24,0x20,0x4c};
     const uint8_t unregisterBytes[]={0x85,0xd2,0x0f,0x84,0xd9,0,0,0,0x48,0x89,0x5c,0x24,0x08,0x57,0x48,0x83};
-    if(std::memcmp(module+0x11a3780,registerBytes,sizeof(registerBytes))||std::memcmp(module+0x11a6e50,unregisterBytes,sizeof(unregisterBytes))) return false;
-    g_registerImage=reinterpret_cast<RegisterImageFn>(module+0x11a3780);
-    g_unregisterImage=reinterpret_cast<UnregisterImageFn>(module+0x11a6e50);
+    if(std::memcmp(module+0x11a29e0,registerBytes,sizeof(registerBytes))||std::memcmp(module+0x11a60b0,unregisterBytes,sizeof(unregisterBytes))) return false;
+    g_registerImage=reinterpret_cast<RegisterImageFn>(module+0x11a29e0);
+    g_unregisterImage=reinterpret_cast<UnregisterImageFn>(module+0x11a60b0);
     const uint8_t importImageBytes[]={0x40,0x55,0x56,0x57,0x41,0x56,0x41,0x57,0x48,0x8d,0x6c,0x24,0xd1,0x48,0x81,0xec};
-    if(std::memcmp(module+0x102cdf0,importImageBytes,sizeof(importImageBytes)))return false;
-    g_importImage=reinterpret_cast<ImportImageFn>(module+0x102cdf0);
+    if(std::memcmp(module+0x102cdd0,importImageBytes,sizeof(importImageBytes)))return false;
+    g_importImage=reinterpret_cast<ImportImageFn>(module+0x102cdd0);
     const uint8_t freeImageBytes[]={0x48,0x8b,0xc4,0x55,0x57,0x48,0x81,0xec,0x88,0x0,0x0,0x0,0x48,0x83,0x3a,0x0};
-    if(std::memcmp(module+0x102ec70,freeImageBytes,sizeof(freeImageBytes)))return false;
-    g_freeImage=reinterpret_cast<FreeImageFn>(module+0x102ec70);
+    if(std::memcmp(module+0x102ec50,freeImageBytes,sizeof(freeImageBytes)))return false;
+    g_freeImage=reinterpret_cast<FreeImageFn>(module+0x102ec50);
     g_output=static_cast<ImageView*>(host->keep("portal-imported-output-v1",sizeof(ImageView)));
     if(!g_output)return false;
     const uint8_t bindImageBytes[]={0x41,0xf,0xb7,0x40,0x8,0x4c,0x8b,0x81,0x78,0x1,0x0,0x0,0x48,0x8b,0x49,0x8};
-    if(std::memcmp(module+0x10344e0,bindImageBytes,16))return false;
-    g_bindImage=reinterpret_cast<BindImageFn>(module+0x10344e0);
+    if(std::memcmp(module+0x10344c0,bindImageBytes,16))return false;
+    g_bindImage=reinterpret_cast<BindImageFn>(module+0x10344c0);
     g_display=static_cast<DisplayState*>(host->keep("portal-native-ui-v1",sizeof(DisplayState)));
     if(!g_display)return false;
     g_auxDisplays=static_cast<DisplayState*>(host->keep("portal-diagnostic-images-v1",2*sizeof(DisplayState)));
@@ -1385,7 +1385,7 @@ bool Init(const GreeneyeHost* host) {
     g_sceneIbl=reinterpret_cast<BindFn>(host->find(signatures::sceneIbl,nullptr));
     if(reinterpret_cast<void*>(g_sceneIbl)!=module+0x1121f0)return false;
     g_terrainRequest=reinterpret_cast<TerrainRequestFn>(host->find(signatures::terrainRequest,nullptr));
-    if(reinterpret_cast<void*>(g_terrainRequest)!=module+0x10c42d0)return false;
+    if(reinterpret_cast<void*>(g_terrainRequest)!=module+0x10c34a0)return false;
     if(!g_target||!g_scope||!g_plan||!g_image||!g_commit||!g_end||!g_release||!g_dimensions) {
         host->log("Town Portal: independent target signatures unavailable");
         g_target=nullptr;
