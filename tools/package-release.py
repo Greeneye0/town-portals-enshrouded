@@ -20,9 +20,9 @@ if destination.exists():
 destination.mkdir(parents=True)
 dll = root / "bin/loader/town-portal.dll"
 assert json.loads((root / "bin/loader/mod.json").read_text())["version"] == version, "build.bat first"
-# The released Greeneye loader 1.2.0 (the game folder may hold a newer development one).
-loader = root / "dist/TownPortals-1.0.6/client/dbgcore.dll"
-assert hashlib.sha256(loader.read_bytes()).hexdigest().startswith("7b97b41bd89d4652"), "not loader 1.2.0"
+# The Greeneye loader this release ships.
+loader = pathlib.Path(r"C:\Users\vansa\EnshroudedMods\GreeneyeLoader\bin\dbgcore.dll")
+assert b"1.2.2" in loader.read_bytes(), "not loader 1.2.2"
 for side in ("client", "server"):
     folder = destination / side / "greeneye/town-portal"
     folder.mkdir(parents=True)

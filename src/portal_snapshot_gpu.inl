@@ -58,7 +58,7 @@ bool ShareNativeMatches() {
         auto* host=greeneye::Host();
         match=1;
         for(const auto& entry:sharing::native::entries)
-            if(host->find(entry.signature,nullptr)!=g_nativeBase+entry.rva)match=0;
+            if(host->find(entry.signature,nullptr)!=natives::At(entry.rva))match=0;
     }return match!=0;
 }
 sharing::Metadata ShareMetadata(const Snapshot& s,bool shroud){

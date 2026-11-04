@@ -18,6 +18,7 @@ enum Id { StillChecking, ServerMissing, ChannelCancelled, Travelling, ClosesSoon
           LoadingPercent,     // the loading screen's progress, printf with the percent (0-100)
           PortalClosed, NoOpenPortal, // holding the cast key closes your portal
           HoldToClose,        // the prompt row under your own portal's prompt
+          GameUpdateOff,      // the cast is off because a game update changed what it needs
           IdCount };
 
 inline constexpr const char* kTexts[size_t(Lang::count)][IdCount]={
@@ -42,7 +43,8 @@ inline constexpr const char* kTexts[size_t(Lang::count)][IdCount]={
  "Loading… %d%%",
  "Portal closed.",
  "You have no open portal.",
- "Hold: Close your portal"},
+ "Hold: Close your portal",
+  "A game update changed something Town Portals needs, so portals are off until the mod is updated."},
 // fr
 {"Vérification en cours : ce serveur utilise-t-il Town Portal ? Réessayez dans quelques secondes.",
  "Ce serveur n'utilise pas Town Portal : les portails ne sont pas disponibles ici. Le mod doit aussi être installé sur le serveur.",
@@ -64,7 +66,8 @@ inline constexpr const char* kTexts[size_t(Lang::count)][IdCount]={
  "Chargement… %d %%",
  "Portail fermé.",
  "Vous n'avez aucun portail ouvert.",
- "Maintenir : fermer votre portail"},
+ "Maintenir : fermer votre portail",
+  "Une mise à jour du jeu a modifié un élément requis par Town Portals : les portails sont désactivés jusqu'à la mise à jour du mod."},
 // it
 {"Verifica in corso: questo server usa Town Portal? Riprova tra qualche secondo.",
  "Questo server non usa Town Portal, quindi i portali non sono disponibili qui. Anche il server deve avere la mod installata.",
@@ -86,7 +89,8 @@ inline constexpr const char* kTexts[size_t(Lang::count)][IdCount]={
  "Caricamento… %d%%",
  "Portale chiuso.",
  "Non hai nessun portale aperto.",
- "Tieni premuto: chiudi il portale"},
+ "Tieni premuto: chiudi il portale",
+  "Un aggiornamento del gioco ha modificato qualcosa di necessario a Town Portals: i portali sono disattivati finché la mod non viene aggiornata."},
 // de
 {"Es wird noch geprüft, ob dieser Server Town Portal verwendet. Versuche es in ein paar Sekunden erneut.",
  "Dieser Server verwendet Town Portal nicht, daher sind Portale hier nicht verfügbar. Die Mod muss auch auf dem Server installiert sein.",
@@ -108,7 +112,8 @@ inline constexpr const char* kTexts[size_t(Lang::count)][IdCount]={
  "Wird geladen … %d %%",
  "Portal geschlossen.",
  "Du hast kein offenes Portal.",
- "Halten: Portal schließen"},
+ "Halten: Portal schließen",
+  "Ein Spielupdate hat etwas geändert, das Town Portals braucht. Portale sind deaktiviert, bis die Mod aktualisiert wird."},
 // es
 {"Comprobando si este servidor usa Town Portal. Inténtalo de nuevo en unos segundos.",
  "Este servidor no usa Town Portal, así que los portales no están disponibles aquí. El servidor también necesita tener el mod instalado.",
@@ -130,7 +135,8 @@ inline constexpr const char* kTexts[size_t(Lang::count)][IdCount]={
  "Cargando… %d %%",
  "Portal cerrado.",
  "No tienes ningún portal abierto.",
- "Mantener: cerrar tu portal"},
+ "Mantener: cerrar tu portal",
+  "Una actualización del juego cambió algo que Town Portals necesita: los portales están desactivados hasta que se actualice el mod."},
 // ja
 {"このサーバーでTown Portalが動作しているか確認中です。数秒後にもう一度お試しください。",
  "このサーバーではTown Portalが動作していないため、ここではポータルを使用できません。サーバーにもMODのインストールが必要です。",
@@ -152,7 +158,8 @@ inline constexpr const char* kTexts[size_t(Lang::count)][IdCount]={
  "読み込み中… %d%%",
  "ポータルを閉じました。",
  "開いているポータルはありません。",
- "長押し：ポータルを閉じる"},
+ "長押し：ポータルを閉じる",
+  "ゲームのアップデートによりTown Portalsに必要な部分が変更されたため、MODが更新されるまでポータルは使えません。"},
 // ko
 {"이 서버에서 Town Portal을 사용하는지 확인하는 중입니다. 몇 초 후에 다시 시도하세요.",
  "이 서버는 Town Portal을 사용하지 않으므로 여기서는 포털을 사용할 수 없습니다. 서버에도 모드가 설치되어 있어야 합니다.",
@@ -174,7 +181,8 @@ inline constexpr const char* kTexts[size_t(Lang::count)][IdCount]={
  "불러오는 중… %d%%",
  "포털을 닫았습니다.",
  "열려 있는 포털이 없습니다.",
- "길게 누르기: 포털 닫기"},
+ "길게 누르기: 포털 닫기",
+  "게임 업데이트로 Town Portals에 필요한 부분이 변경되어 모드가 업데이트될 때까지 포털을 사용할 수 없습니다."},
 // pl
 {"Trwa sprawdzanie, czy ten serwer używa Town Portal. Spróbuj ponownie za kilka sekund.",
  "Ten serwer nie używa Town Portal, więc portale są tu niedostępne. Mod musi być zainstalowany także na serwerze.",
@@ -196,7 +204,8 @@ inline constexpr const char* kTexts[size_t(Lang::count)][IdCount]={
  "Wczytywanie… %d%%",
  "Portal zamknięty.",
  "Nie masz otwartego portalu.",
- "Przytrzymaj: zamknij portal"},
+ "Przytrzymaj: zamknij portal",
+  "Aktualizacja gry zmieniła coś, czego potrzebuje Town Portals. Portale są wyłączone do czasu aktualizacji moda."},
 // pt
 {"Verificando se este servidor usa o Town Portal. Tente novamente em alguns segundos.",
  "Este servidor não usa o Town Portal, então os portais não estão disponíveis aqui. O servidor também precisa ter o mod instalado.",
@@ -218,7 +227,8 @@ inline constexpr const char* kTexts[size_t(Lang::count)][IdCount]={
  "Carregando… %d%%",
  "Portal fechado.",
  "Você não tem nenhum portal aberto.",
- "Segurar: fechar seu portal"},
+ "Segurar: fechar seu portal",
+  "Uma atualização do jogo mudou algo de que o Town Portals precisa: os portais estão desativados até o mod ser atualizado."},
 // ru
 {"Проверяем, установлен ли на этом сервере Town Portal. Повторите попытку через несколько секунд.",
  "На этом сервере не установлен Town Portal, поэтому порталы здесь недоступны. Мод должен быть установлен и на сервере.",
@@ -240,7 +250,8 @@ inline constexpr const char* kTexts[size_t(Lang::count)][IdCount]={
  "Загрузка… %d%%",
  "Портал закрыт.",
  "У вас нет открытого портала.",
- "Удерживать: закрыть портал"},
+ "Удерживать: закрыть портал",
+  "Обновление игры изменило то, что нужно Town Portals: порталы отключены до обновления мода."},
 // zh-hans
 {"正在检查此服务器是否运行 Town Portal。请几秒后再试。",
  "此服务器未运行 Town Portal，因此无法在此使用传送门。服务器也需要安装此模组。",
@@ -262,7 +273,8 @@ inline constexpr const char* kTexts[size_t(Lang::count)][IdCount]={
  "加载中… %d%%",
  "传送门已关闭。",
  "你没有已开启的传送门。",
- "长按：关闭传送门"},
+ "长按：关闭传送门",
+  "游戏更新改动了 Town Portals 所需的内容，在模组更新之前传送门不可用。"},
 // zh-hant
 {"正在檢查此伺服器是否執行 Town Portal。請幾秒後再試。",
  "此伺服器未執行 Town Portal，因此無法在此使用傳送門。伺服器也需要安裝此模組。",
@@ -284,7 +296,8 @@ inline constexpr const char* kTexts[size_t(Lang::count)][IdCount]={
  "載入中… %d%%",
  "傳送門已關閉。",
  "你沒有已開啟的傳送門。",
- "長按：關閉傳送門"},
+ "長按：關閉傳送門",
+  "遊戲更新變更了 Town Portals 所需的內容，在模組更新之前傳送門無法使用。"},
 // tr
 {"Bu sunucunun Town Portal kullanıp kullanmadığı hâlâ kontrol ediliyor. Birkaç saniye sonra tekrar dene.",
  "Bu sunucu Town Portal kullanmıyor, bu yüzden portallar burada kullanılamaz. Modun sunucuda da kurulu olması gerekir.",
@@ -306,7 +319,8 @@ inline constexpr const char* kTexts[size_t(Lang::count)][IdCount]={
  "Yükleniyor… %%%d",
  "Portal kapatıldı.",
  "Açık bir portalın yok.",
- "Basılı tut: portalı kapat"},
+ "Basılı tut: portalı kapat",
+  "Bir oyun güncellemesi Town Portals için gereken bir şeyi değiştirdi; mod güncellenene kadar portallar kapalı."},
 // uk
 {"Перевіряємо, чи встановлено на цьому сервері Town Portal. Спробуйте ще раз за кілька секунд.",
  "На цьому сервері не встановлено Town Portal, тому портали тут недоступні. Мод має бути встановлений і на сервері.",
@@ -328,7 +342,8 @@ inline constexpr const char* kTexts[size_t(Lang::count)][IdCount]={
  "Завантаження… %d%%",
  "Портал закрито.",
  "У вас немає відкритого порталу.",
- "Утримувати: закрити портал"},
+ "Утримувати: закрити портал",
+  "Оновлення гри змінило те, що потрібно Town Portals: портали вимкнено до оновлення мода."},
 // th
 {"กำลังตรวจสอบว่าเซิร์ฟเวอร์นี้ใช้ Town Portal หรือไม่ โปรดลองอีกครั้งในอีกไม่กี่วินาที",
  "เซิร์ฟเวอร์นี้ไม่ได้ใช้ Town Portal จึงใช้พอร์ทัลที่นี่ไม่ได้ เซิร์ฟเวอร์ต้องติดตั้งม็อดนี้ด้วย",
@@ -350,7 +365,8 @@ inline constexpr const char* kTexts[size_t(Lang::count)][IdCount]={
  "กำลังโหลด… %d%%",
  "ปิดพอร์ทัลแล้ว",
  "คุณไม่มีพอร์ทัลที่เปิดอยู่",
- "กดค้าง: ปิดพอร์ทัล"},
+ "กดค้าง: ปิดพอร์ทัล",
+  "การอัปเดตเกมเปลี่ยนสิ่งที่ Town Portals ต้องใช้ พอร์ทัลจึงปิดอยู่จนกว่าม็อดจะอัปเดต"},
 };
 
 inline const char* Get(Lang lang,Id id) {

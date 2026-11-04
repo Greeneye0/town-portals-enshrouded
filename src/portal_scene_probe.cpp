@@ -1,6 +1,7 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include "portal_build.h"
+#include "portal_natives.h"
 #include "portal_quality.h"
 #include "portal_scene_probe.h"
 #include "portal_snapshot_share.h"
@@ -1325,29 +1326,20 @@ void AttachmentJson(const Attachment& a,char* out,size_t capacity) {
 }
 }
 bool Init(const GreeneyeHost* host) {
-    // Layout probes must fail closed on an unverified executable, even if a
-    // function signature happens to survive a game update.
+    // Layout probes must fail closed when the game's layout may have moved: every native function
+    // and every layout guard has to match (portal_natives.h), on any build.
     auto* module=reinterpret_cast<uint8_t*>(GetModuleHandleW(nullptr));
-    if(!build::Client()) {
-        host->log("Town Portal scene probe: unsupported engine build; native research disabled");
+    if(!natives::RenderReady()) {
+        host->log("Town Portal scene probe: native checks did not pass; native research disabled");
         return false;
     }
-    const uint8_t registerBytes[]={0x48,0x89,0x5c,0x24,0x08,0x48,0x89,0x6c,0x24,0x10,0x4c,0x89,0x4c,0x24,0x20,0x4c};
-    const uint8_t unregisterBytes[]={0x85,0xd2,0x0f,0x84,0xd9,0x00,0x00,0x00,0x48,0x89,0x5c,0x24,0x08,0x57,0x48,0x83};
-    if(std::memcmp(module+0x11a2ab0,registerBytes,sizeof(registerBytes))||std::memcmp(module+0x11a6180,unregisterBytes,sizeof(unregisterBytes))) return false;
-    g_registerImage=reinterpret_cast<RegisterImageFn>(module+0x11a2ab0);
-    g_unregisterImage=reinterpret_cast<UnregisterImageFn>(module+0x11a6180);
-    const uint8_t importImageBytes[]={0x40,0x55,0x56,0x57,0x41,0x56,0x41,0x57,0x48,0x8d,0x6c,0x24,0xd1,0x48,0x81,0xec};
-    if(std::memcmp(module+0x102ceb0,importImageBytes,sizeof(importImageBytes)))return false;
-    g_importImage=reinterpret_cast<ImportImageFn>(module+0x102ceb0);
-    const uint8_t freeImageBytes[]={0x48,0x8b,0xc4,0x55,0x57,0x48,0x81,0xec,0x88,0x00,0x00,0x00,0x48,0x83,0x3a,0x00};
-    if(std::memcmp(module+0x102ed30,freeImageBytes,sizeof(freeImageBytes)))return false;
-    g_freeImage=reinterpret_cast<FreeImageFn>(module+0x102ed30);
+    g_registerImage=reinterpret_cast<RegisterImageFn>(natives::At(0x11a2ab0));
+    g_unregisterImage=reinterpret_cast<UnregisterImageFn>(natives::At(0x11a6180));
+    g_importImage=reinterpret_cast<ImportImageFn>(natives::At(0x102ceb0));
+    g_freeImage=reinterpret_cast<FreeImageFn>(natives::At(0x102ed30));
     g_output=static_cast<ImageView*>(host->keep("portal-imported-output-v1",sizeof(ImageView)));
     if(!g_output)return false;
-    const uint8_t bindImageBytes[]={0x41,0x0f,0xb7,0x40,0x08,0x4c,0x8b,0x81,0x78,0x01,0x00,0x00,0x48,0x8b,0x49,0x08};
-    if(std::memcmp(module+0x10345a0,bindImageBytes,16))return false;
-    g_bindImage=reinterpret_cast<BindImageFn>(module+0x10345a0);
+    g_bindImage=reinterpret_cast<BindImageFn>(natives::At(0x10345a0));
     g_display=static_cast<DisplayState*>(host->keep("portal-native-ui-v1",sizeof(DisplayState)));
     if(!g_display)return false;
     g_auxDisplays=static_cast<DisplayState*>(host->keep("portal-diagnostic-images-v1",2*sizeof(DisplayState)));
@@ -1383,9 +1375,9 @@ bool Init(const GreeneyeHost* host) {
     g_dimensions=reinterpret_cast<DimensionsFn>(host->find(signatures::dimensions,nullptr));
     g_sceneReady=reinterpret_cast<ReadyFn>(host->find(signatures::sceneReady,nullptr));
     g_sceneIbl=reinterpret_cast<BindFn>(host->find(signatures::sceneIbl,nullptr));
-    if(reinterpret_cast<void*>(g_sceneIbl)!=module+0x1122c0)return false;
+    if(reinterpret_cast<void*>(g_sceneIbl)!=natives::At(0x1122c0))return false;
     g_terrainRequest=reinterpret_cast<TerrainRequestFn>(host->find(signatures::terrainRequest,nullptr));
-    if(reinterpret_cast<void*>(g_terrainRequest)!=module+0x10c3580)return false;
+    if(reinterpret_cast<void*>(g_terrainRequest)!=natives::At(0x10c3580))return false;
     if(!g_target||!g_scope||!g_plan||!g_image||!g_commit||!g_end||!g_release||!g_dimensions) {
         host->log("Town Portal: independent target signatures unavailable");
         g_target=nullptr;
@@ -1404,7 +1396,7 @@ bool Init(const GreeneyeHost* host) {
     g_stateCreate=reinterpret_cast<StateCreateFn>(host->hook(stateEntry,reinterpret_cast<void*>(StateCreateHook),15,nullptr,0));
     if(!g_stateCreate)return false;
     if(!rootEntry||!createEntry||!bindEntry||!destroyEntry||!tickEntry||!projectionEntry||!projectionMatrixEntry) return false;
-    g_projectionCaller=module+0x12d372;
+    g_projectionCaller=natives::At(0x12d372);
     // First 15 bytes end at movaps [rsp+20],xmm6; no relative operands.
     g_projectionDesc=reinterpret_cast<ProjectionDescFn>(host->hook(projectionEntry,reinterpret_cast<void*>(ProjectionDescHook),15,nullptr,0));
     if(!g_projectionDesc)return false;
@@ -1430,7 +1422,7 @@ bool Init(const GreeneyeHost* host) {
     if(host->redirectCall){
         if(auto* found=host->find("00 00 83 BF 80 02 00 00 20 0F 94 85 04 4B 00 00 E8 ?? ?? ?? ??",nullptr)){
             auto* site=found+16;int32_t delta=0;std::memcpy(&delta,site+1,4);
-            if(host->generation>1||site+5+delta==module+0x11a870)
+            if(host->generation>1||site+5+delta==natives::At(0x11a870))
                 g_upscaleNext=reinterpret_cast<UpscaleFn>(host->redirectCall(site,reinterpret_cast<void*>(UpscaleHook)));
         }
     }
@@ -1450,8 +1442,8 @@ bool Init(const GreeneyeHost* host) {
             auto* site=found+snapshot::hide::callOffset;
             int32_t delta=0;std::memcpy(&delta,site+1,4);
             const auto* target=host->find(snapshot::hide::equipmentTarget,nullptr);
-            if(site==module+snapshot::hide::callRva&&site[0]==0xe8&&
-               target==module+snapshot::hide::targetRva&&
+            if(site==natives::At(snapshot::hide::callRva)&&site[0]==0xe8&&
+               target==natives::At(snapshot::hide::targetRva)&&
                (host->generation>1||site+5+delta==target))
                 g_equipmentHideNext=reinterpret_cast<EquipmentHideFn>(host->redirectCall(site,reinterpret_cast<void*>(EquipmentHideHook)));
         }

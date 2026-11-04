@@ -1536,7 +1536,7 @@ void DrawFrameBody(Widget& widget, const CameraFrame& cam, const std::vector<Por
         // Below the compass and the game's own lines under it (the Shroud timer bar and its
         // "ENSHROUDED" label).
         float w=std::min(540.0f,sw-40),x=ox+(sw-w)*0.5f,y=oy+215;
-        auto lines=text::Wrap(noticeBody,std::max(size_t(10),size_t((w-20)/9.5f)));
+        auto lines=text::Wrap(noticeBody,std::max(size_t(10),size_t((w-20)/12.0f)));
         if (lines.empty()) lines.emplace_back(noticeBody);
         float h=42+26*float(lines.size());
         DrawNineSliceBox(widget.raw,kAssetRoundedBox,x,y,w,h,0xe824180eu,0.9f,8);

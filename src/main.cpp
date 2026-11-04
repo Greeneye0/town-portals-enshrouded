@@ -14,6 +14,7 @@
 #include <vector>
 #include "greeneye.h"
 #include "portal_build.h"
+#include "portal_natives.h"
 #include "portal_protocol.h"
 #include "portal_render.h"
 #include "portal_colors.h"
@@ -1549,6 +1550,7 @@ void TryOpenPortalAtPlayer(void* gameClient, uint8_t* uiClient,
     if(GetTickCount64()<g_castUntil)return;
     if (!portal::casting::MovementLockReady()) {
         Log("Town Portal: cast refused because the movement lock is unavailable");
+        portal::render::ShowNotice("Town Portal", portal::text::Get(portal::render::Language(), portal::text::GameUpdateOff), 6000);
         return;
     }
     const auto rules = CurrentRules();
@@ -1840,6 +1842,14 @@ void RunGameplayTick(void* app, std::vector<portal::PortalInstance>& outPortals,
     CheckDefaultPicture(uiClient, GetTickCount64());
 
     bool inPlayHud = uiClient[0x1cd8] == 1 && (g_seenPlayFrame + 2 >= g_frame);
+    // Two minutes of play on an untested build: it didn't crash on anything that runs early.
+    {
+        static uint64_t playingSince = 0;
+        const uint64_t nowTick = GetTickCount64();
+        if (!inPlayHud) playingSince = 0;
+        else if (!playingSince) playingSince = nowTick;
+        else if (nowTick - playingSince > 120000) portal::natives::NoteStablePlay();
+    }
     bool focused = IsGameFocused();
 #ifdef TOWN_PORTAL_DEV
     focused = focused || GetTickCount64() < g_devCastKeyUntil + 250; // the simulated key needs no focus
@@ -2215,6 +2225,7 @@ extern "C" __declspec(dllexport) int TownPortalDevControl(
     case 13: g_devInteractRequested=true;break;
     case 17: g_devCastKeyUntil=GetTickCount64()+1300;break;
     case 18: g_devCastKeyUntil=GetTickCount64()+100;break;
+    case 19: portal::render::ShowNotice("Town Portal",portal::text::Get(portal::render::Language(),portal::text::GameUpdateOff),15000);break;
     case 15: if(!portal::casting::Start(client))return -6;g_castUntil=GetTickCount64()+portal::casting::DurationMs();break;
     case 16: {
         const auto* p=request->from;
@@ -2325,9 +2336,9 @@ GREENEYE_MOD_START {
     auto* exe = reinterpret_cast<uint8_t*>(GetModuleHandleW(nullptr));
     auto* nt = reinterpret_cast<IMAGE_NT_HEADERS64*>(exe + reinterpret_cast<IMAGE_DOS_HEADER*>(exe)->e_lfanew);
     bool serverSide = (host->side == kGreeneyeServer);
-    // Another build of the game (a beta branch, a patch, a modified exe): start anyway. Every
-    // hook is found by signature and turns itself off when missing; the cast animation and the
-    // in-frame renderer, which read fixed layouts, keep their own exact-build checks.
+    // Another build of the game (a beta branch, a patch, a modified exe): start anyway. Every hook and
+    // native function is found by signature and turns itself off when missing; the renderer also needs
+    // the layout guards in portal_natives.h, and a crash on an untested build turns it all off there.
     if (serverSide ? !portal::build::Matches(portal::build::kServerStamp, portal::build::kServerSize) : !portal::build::Client()) {
         char line[200];
         std::snprintf(line, sizeof(line), "Town Portal: WARNING: game build %08lx/%lx is not the one this version was made for; trying anyway (report problems with this log)",
@@ -2339,6 +2350,7 @@ GREENEYE_MOD_START {
         return false;
     }
 
+    if (!serverSide) portal::natives::Resolve(host);
     portal::rules::WriteDefaults();
     portal::rules::WriteControlsDefaults();
     if (!portal::travel::Init(host)) {
@@ -2347,7 +2359,7 @@ GREENEYE_MOD_START {
     }
 
     if (serverSide) {
-        Log("Town Portals 1.0.9: server companion loaded");
+        Log("Town Portals 1.0.10: server companion loaded");
         return true;
     }
 
@@ -2410,7 +2422,7 @@ GREENEYE_MOD_START {
     portal::casting::Init(host);
     LogGraphicsAdapters();
 
-    Log("Town Portals 1.0.9: press T (OpenPortalKey in town-portal.ini) to open a portal to your Preferred Spawn Flame Altar");
+    Log("Town Portals 1.0.10: press T (OpenPortalKey in town-portal.ini) to open a portal to your Preferred Spawn Flame Altar");
     return true;
 }
 

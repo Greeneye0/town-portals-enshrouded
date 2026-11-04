@@ -110,7 +110,8 @@ CompositeSlot g_compositeSlots[kCompositeSlots]{};
 uint32_t g_compositeSlotCount{};
 uint64_t g_compositeSlotTick{};
 uint8_t* g_nativeBase{};
-template<class F> F Native(size_t rva){return reinterpret_cast<F>(g_nativeBase+rva);}
+// rva: the address in the reference build (portal_natives.h), a key that never changes.
+template<class F> F Native(uint32_t rva){return reinterpret_cast<F>(natives::At(rva));}
 template<class F> F DeviceMethod(void* device,size_t offset){return At<F>(At<void*>(device,0),offset);}
 
 void CompositeReleaseObject(void*& object) {

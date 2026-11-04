@@ -12,6 +12,7 @@
 #include "../src/portal_snapshot_native.h"
 #include "../src/portal_snapshot_hide.h"
 #include "../src/portal_cast_hooks.h"
+#include "../src/portal_natives_table.h"
 
 namespace {
 
@@ -198,7 +199,22 @@ int main() {
     const auto* dos=reinterpret_cast<const IMAGE_DOS_HEADER*>(exe.data());
     const auto* nt=reinterpret_cast<const IMAGE_NT_HEADERS64*>(exe.data()+dos->e_lfanew);
     const auto* sections=IMAGE_FIRST_SECTION(nt);
+    // Every generated native signature and layout guard must match once in the installed game.
     {
+        struct Native {const char* name;const char* signature;};
+#define PORTAL_TEST_NATIVE(name,signature,offset,follow,key) {#name,signature},
+        const Native natives[]={PORTAL_NATIVE_TABLE(PORTAL_TEST_NATIVE)};
+#undef PORTAL_TEST_NATIVE
+        int missing=0;
+        for(const auto& n:natives)
+            if(!FindUniqueInBuffer(exe.data(),exe.size(),n.signature)){std::printf("FAIL: native signature %s\n",n.name);++missing;}
+        if(missing)return 1;
+        std::printf("PASS: %zu native signatures and layout guards\n",sizeof(natives)/sizeof(natives[0]));
+    }
+    // The fixed addresses below are the reference build's: they only hold on that build.
+    const bool reference=nt->FileHeader.TimeDateStamp==0x6aeb144c;
+    if(!reference)std::puts("SKIP: the installed game isn't the reference build; fixed-address checks skipped");
+    if(reference){
         using namespace portal::casting::hooks;
         const auto* site=FindUniqueInBuffer(exe.data(),exe.size(),inputPattern)+inputCallOffset;
         const size_t offset=site-exe.data();
@@ -237,7 +253,7 @@ int main() {
     }
     // Only redirect the camera-hide getter used by local_visual_equipment_hide.
     // Resolve file offsets through PE sections before checking the relative call.
-    {
+    if(reference){
         using namespace portal::snapshot::hide;
         auto rvaOf=[&](const uint8_t* ptr)->uint32_t{
             const size_t offset=ptr-exe.data();
@@ -256,7 +272,7 @@ int main() {
         }
         std::printf("PASS: local equipment hide call RVA 0x%x -> 0x%x\n",callRva,targetRva);
     }
-    for(const auto& entry:portal::sharing::native::entries){
+    if(reference)for(const auto& entry:portal::sharing::native::entries){
         const auto* match=FindUniqueInBuffer(exe.data(),exe.size(),entry.signature);
         uint32_t rva=0;
         if(match){const size_t offset=match-exe.data();

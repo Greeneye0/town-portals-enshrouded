@@ -2,6 +2,7 @@
 #define NOMINMAX
 #include "portal_cast.h"
 #include "portal_build.h"
+#include "portal_natives.h"
 #include "portal_cast_hooks.h"
 #include "portal_snapshot_timing.h"
 #include "portal_cast_data.h"
@@ -142,15 +143,15 @@ bool BindSafe(void* client){
 }
 }
 bool Init(const GreeneyeHost* host){
- auto* exe=reinterpret_cast<uint8_t*>(GetModuleHandleW(nullptr));
- if(!greeneye::HostHasHooks(host)||!host->redirectCall||!host->read||!build::Client())return false;
- auto* site=exe+hooks::evaluateCallRva;
- if(!hooks::CheckCall(host->read,site,exe+hooks::evaluateTargetRva))return false;
- g_component=reinterpret_cast<ComponentFn>(exe+hooks::componentRva);
- g_stack=reinterpret_cast<StackFn>(exe+hooks::stackRva);
+ if(!greeneye::HostHasHooks(host)||!host->redirectCall||!host->read)return false;
+ if(!natives::Has({hooks::evaluateCallRva,hooks::evaluateTargetRva,hooks::componentRva,hooks::stackRva}))return false;
+ auto* site=natives::At(hooks::evaluateCallRva);
+ if(!hooks::CheckCall(host->read,site,natives::At(hooks::evaluateTargetRva)))return false;
+ g_component=reinterpret_cast<ComponentFn>(natives::At(hooks::componentRva));
+ g_stack=reinterpret_cast<StackFn>(natives::At(hooks::stackRva));
  g_next=reinterpret_cast<EvaluateFn>(host->redirectCall(site,reinterpret_cast<void*>(EvaluateHook)));
- auto* input=exe+hooks::inputCallRva;
- if(hooks::CheckInputCall(host->read,input,exe+hooks::inputTargetRva))
+ auto* input=natives::At(hooks::inputCallRva);
+ if(input&&natives::At(hooks::inputTargetRva)&&hooks::CheckInputCall(host->read,input,natives::At(hooks::inputTargetRva)))
   g_inputNext=reinterpret_cast<InputFn>(host->redirectCall(input,reinterpret_cast<void*>(InputHook)));
  if(host->log)host->log(g_inputNext?"Town Portal: chained movement lock ready; Jump cancels channel":"Town Portal: movement lock unavailable; portal casting disabled");
  if(host->log)host->log(g_next?"Town Portal: channel pose adapter loaded":"Town Portal: cast pose adapter requires a client restart");
