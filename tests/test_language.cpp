@@ -16,8 +16,9 @@ int main() {
     using portal::text::Lang;
     CHECK(Is("Legendary", Lang::en));
     CHECK(Is("Legendär", Lang::de));
-    for (const char* ru : {"Легендарный", "Легендарное", "Легендарная", "Легендарные", "ЛЕГЕНДАРНОЕ"}) CHECK(Is(ru, Lang::ru));
-    for (const char* uk : {"Легендарний", "Легендарна", "Легендарне", "Легендарні"}) CHECK(Is(uk, Lang::uk));
+    CHECK(Is("Legendário", Lang::pt));
+    for (const char* ru : {"Легенд.", "Легендарный", "Легендарное", "Легендарная", "Легендарные", "ЛЕГЕНДАРНОЕ"}) CHECK(Is(ru, Lang::ru));
+    for (const char* uk : {"Легендарн.", "Легендарний", "Легендарна", "Легендарне", "Легендарні"}) CHECK(Is(uk, Lang::uk));
     CHECK(Is("传说", Lang::zhHans));
     Lang kept = Lang::de;
     CHECK(!portal::text::Detect("", kept) && kept == Lang::de);

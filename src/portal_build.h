@@ -21,7 +21,7 @@ inline bool Matches(uint32_t stamp, uint32_t size) {
         if (std::memcmp(section[i].Name, ".bind", 6) == 0) return false;
     return true;
 }
-constexpr uint32_t kClientStamp = 0x6ae9b2ac, kClientSize = 0x2a3f000;
-constexpr uint32_t kServerStamp = 0x6ae9b2c5, kServerSize = 0x1dde000;
+constexpr uint32_t kClientStamp = 0x6aeb144c, kClientSize = 0x2a3f000;
+constexpr uint32_t kServerStamp = 0x6aeb143e, kServerSize = 0x1dde000;
 inline bool Client() { return Matches(kClientStamp, kClientSize); }
 }

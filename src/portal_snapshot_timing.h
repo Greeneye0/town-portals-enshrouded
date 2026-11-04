@@ -28,6 +28,9 @@ constexpr uint64_t EffectiveActorStates(uint64_t states, uint64_t added,
                                          uint64_t removed, bool pending) {
     return pending ? (states | added) & ~removed : states;
 }
+constexpr bool ActorDead(uint64_t states) {
+    return (states & (1ull << 7)) != 0; // ActorState Dead
+}
 constexpr bool ActorReadyForSnapshot(uint64_t states) {
     return !(states & (1ull << 12)) && (states & (1ull << 50)); // Spawning / IsReadyForGameplay
 }

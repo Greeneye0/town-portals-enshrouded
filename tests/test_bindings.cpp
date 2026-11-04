@@ -51,6 +51,13 @@ int main() {
     // Bound to something that is not a key: no keyboard key (the gamepad still works).
     k = InteractKeysFromSettings(Settings(Binding("ContextualAction", "MouseWheel", "Up").c_str()));
     CHECK(k.custom && k.count == 0);
+    // The gamepad: Y unless the file binds another button.
+    CHECK(PadInteractFromSettings("").buttons == 0x8000);
+    CHECK(PadInteractFromSettings("{\"input\":{\"gamepad\":{\"bindings\":{\"gameplay\":[]}}}}").buttons == 0x8000);
+    Keys::Pad pad = PadInteractFromSettings("{\"input\":{\"gamepad\":{\"bindings\":{\"gameplay\":[{\"id\":\"ContextualAction\",\"action\":{\"primary\":{\"operation\":{\"type\":\"Button\",\"id\":\"FaceLeft\"}}}}]}}}}");
+    CHECK(pad.buttons == 0x4000 && !pad.leftTrigger && !pad.rightTrigger);
+    pad = PadInteractFromSettings("{\"input\":{\"gamepad\":{\"bindings\":{\"gameplay\":[{\"id\":\"Jump\",\"action\":{\"primary\":{\"operation\":{\"id\":\"FaceBottom\"}}}},{\"id\":\"ContextualAction\",\"action\":{\"primary\":{\"operation\":{\"id\":\"ShoulderLeftLower\"}}}}]}}}}");
+    CHECK(pad.buttons == 0 && pad.leftTrigger);
     if (failures) { std::printf("%d failure(s)\n", failures); return 1; }
     std::printf("interact bindings: all checks passed\n");
     return 0;

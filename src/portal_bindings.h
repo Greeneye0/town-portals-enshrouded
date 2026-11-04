@@ -133,7 +133,7 @@ inline int GameKeyToVk(std::string_view type, std::string_view id) {
 // The interact keys in a user_settings.json text: up to two (primary, secondary). {'E'} when the
 // file has no binding for it (the game's default), or cannot be read; {} when the player bound
 // interact to something the mod cannot read as a key (it then keeps only the gamepad's Y).
-struct Keys { int vk[2]{}; int count = 0; bool custom = false; };
+struct Keys { int vk[2]{}; int count = 0; bool custom = false; struct Pad { uint16_t buttons = 0x8000; bool leftTrigger = false, rightTrigger = false; } pad{}; };
 inline Keys InteractKeysFromSettings(std::string_view text) {
     Keys keys{{'E', 0}, 1, false};
     Json root;
@@ -164,6 +164,50 @@ inline Keys InteractKeysFromSettings(std::string_view text) {
         if (const int vk = GameKeyToVk(type->text, id->text); vk && found.count < 2) found.vk[found.count++] = vk;
     }
     return found;
+}
+
+// A gamepad button by the game's name for it (keen::GamepadButton, read from the exe's type tables) as
+// XInput button bits; the lower shoulders are the analog triggers. 0x8000 is XINPUT_GAMEPAD_Y, the
+// game's default for Interact (FaceTop).
+inline bool GamePadButton(std::string_view id, Keys::Pad& pad) {
+    static constexpr struct { const char* name; uint16_t bits; } kButtons[] = {
+        {"FaceTop", 0x8000}, {"FaceBottom", 0x1000}, {"FaceLeft", 0x4000}, {"FaceRight", 0x2000},
+        {"DpadUp", 0x0001}, {"DpadDown", 0x0002}, {"DpadLeft", 0x0004}, {"DpadRight", 0x0008},
+        {"SystemRight", 0x0010}, {"SystemLeft", 0x0020}, {"LeftStickPress", 0x0040}, {"RightStickPress", 0x0080},
+        {"ShoulderLeftUpper", 0x0100}, {"ShoulderRightUpper", 0x0200}};
+    for (const auto& b : kButtons)
+        if (id == b.name) { pad.buttons |= b.bits; return true; }
+    if (id == "ShoulderLeftLower") { pad.leftTrigger = true; return true; }
+    if (id == "ShoulderRightLower") { pad.rightTrigger = true; return true; }
+    return false;
+}
+inline bool FindPadButtons(const Json& node, Keys::Pad& pad) {
+    bool found = node.kind == Json::string && GamePadButton(node.text, pad);
+    for (const auto& member : node.members) found |= FindPadButtons(member.second, pad);
+    return found;
+}
+// The game's Interact on a gamepad from the same file: FaceTop (Y) unless it was rebound.
+inline Keys::Pad PadInteractFromSettings(std::string_view text) {
+    Keys::Pad fallback{};
+    Json root;
+    if (text.empty() || !Parser(text).Parse(root)) return fallback;
+    const Json* input = root.Get("input");
+    const Json* gamepad = input ? input->Get("gamepad") : nullptr;
+    const Json* bindings = gamepad ? gamepad->Get("bindings") : nullptr;
+    const Json* gameplay = bindings ? bindings->Get("gameplay") : nullptr;
+    if (!gameplay || gameplay->kind != Json::array) return fallback;
+    for (const char* name : {"ContextualAction", "ContextualAction_Tap"}) {
+        for (const auto& item : gameplay->members) {
+            const Json* id = item.second.Get("id");
+            if (!id || id->text != name) continue;
+            const Json* action = item.second.Get("action");
+            Keys::Pad found{};
+            found.buttons = 0;
+            if (action && FindPadButtons(*action, found)) return found;
+            return fallback;
+        }
+    }
+    return fallback;
 }
 
 // The newest user_settings.json for Enshrouded in Steam's userdata (one per Steam account
@@ -213,6 +257,7 @@ inline Keys GameInteractKeys() {
         std::fclose(f);
     }
     keys = InteractKeysFromSettings(text);
+    keys.pad = PadInteractFromSettings(text);
     return keys;
 }
 

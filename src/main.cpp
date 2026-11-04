@@ -109,6 +109,7 @@ constexpr float kAltarCamera = -0.5f;
 constexpr int g_castEffect = 2;
 #ifdef TOWN_PORTAL_DEV
 bool g_devInteractRequested = false;
+uint64_t g_devCastKeyUntil = 0; // the cast key held, without input or focus
 #endif
 
 struct HostLink {
@@ -245,7 +246,7 @@ bool InteractKeyDown() {
     return false;
 }
 
-// A gamepad's Y, the button the portal prompt shows for the game's interact, through XInput
+// The gamepad button the portal prompt shows for the game's interact (Y unless rebound), through XInput
 // (Steam Input and Proton provide it too). Asking about an empty slot can stall for a while,
 // so slots without a pad are tried again only every 2 s.
 bool PadInteractDown() {
@@ -258,13 +259,23 @@ bool PadInteractDown() {
     }();
     static uint64_t retryAt[XUSER_MAX_COUNT]{};
     if (!getState) return false;
+    const auto binding = portal::bindings::GameInteractKeys().pad;
+    static uint16_t loggedButtons = 0;
+    if (binding.buttons != loggedButtons) {
+        loggedButtons = binding.buttons;
+        char line[96]{};
+        std::snprintf(line, sizeof(line), "Town Portal: gamepad Interact buttons 0x%04X%s%s", binding.buttons, binding.leftTrigger ? " + left trigger" : "", binding.rightTrigger ? " + right trigger" : "");
+        Log(line);
+    }
     const uint64_t now = GetTickCount64();
     bool down = false;
     for (DWORD pad = 0; pad < XUSER_MAX_COUNT; ++pad) {
         if (now < retryAt[pad]) continue;
         XINPUT_STATE state{};
         if (getState(pad, &state) != ERROR_SUCCESS) { retryAt[pad] = now + 2000; continue; }
-        down |= (state.Gamepad.wButtons & XINPUT_GAMEPAD_Y) != 0;
+        down |= (state.Gamepad.wButtons & binding.buttons) != 0;
+        down |= binding.leftTrigger && state.Gamepad.bLeftTrigger > XINPUT_GAMEPAD_TRIGGER_THRESHOLD;
+        down |= binding.rightTrigger && state.Gamepad.bRightTrigger > XINPUT_GAMEPAD_TRIGGER_THRESHOLD;
     }
     return down;
 }
@@ -1830,22 +1841,35 @@ void RunGameplayTick(void* app, std::vector<portal::PortalInstance>& outPortals,
 
     bool inPlayHud = uiClient[0x1cd8] == 1 && (g_seenPlayFrame + 2 >= g_frame);
     bool focused = IsGameFocused();
+#ifdef TOWN_PORTAL_DEV
+    focused = focused || GetTickCount64() < g_devCastKeyUntil + 250; // the simulated key needs no focus
+#endif
     bool textActive = IsTextInputActive();
     bool travelling = g_departure.gate.Active() || g_arrival.since || portal::sceneprobe::SnapshotBusy();
-    bool canAcceptHotkeys = inPlayHud && focused && !textActive && !travelling;
+    // Dead: no prompt, no travel, no cast. E is the game's Respawn on the death screen, so it must
+    // not reach a portal beside the body, nor be kept from the game by its prompt (2026-11-03).
+    uint64_t actorStates{};
+    const bool dead = portal::casting::SnapshotActorStates(gameClient, actorStates) && portal::snapshot::ActorDead(actorStates);
+    bool canAcceptHotkeys = inPlayHud && focused && !textActive && !travelling && !dead;
     if (focused) InstallKeyHook();
 
     // The cast key (OpenPortalKey in town-portal.ini, T by default): a tap opens a portal when
     // the key comes up; held for kHoldToCloseMs it closes this player's open portal instead.
     bool tDown = canAcceptHotkeys && KeyDown(portal::rules::OpenPortalKey()) &&
                  !KeyDown(VK_CONTROL) && !KeyDown(VK_MENU) && !KeyDown(VK_SHIFT);
+#ifdef TOWN_PORTAL_DEV
+    tDown = tDown || (canAcceptHotkeys && GetTickCount64() < g_devCastKeyUntil);
+#endif
     bool tPressed = false;
     {
         const uint64_t nowMs = GetTickCount64();
         if (tDown && !g_tWasDown) { g_tHeldSince = nowMs; g_tHoldDone = false; }
         if (tDown && !g_tHoldDone && nowMs - g_tHeldSince >= kHoldToCloseMs) {
             g_tHoldDone = true;
-            CloseOwnPortal(gameClient);
+            // Nothing to close: the player wants a portal, however long the press (IamSky009, 2026-11-04).
+            portal::PortalInstance own{};
+            if (portal::travel::GetPortalByOwner(portal::travel::LocalSteamAccount(), own)) CloseOwnPortal(gameClient);
+            else tPressed = canAcceptHotkeys;
         }
         if (!tDown && g_tWasDown && !g_tHoldDone) tPressed = canAcceptHotkeys; // released after a tap
         if (!canAcceptHotkeys) g_tHoldDone = true; // a menu or travel cut the press short: nothing
@@ -1968,7 +1992,7 @@ void RunGameplayTick(void* app, std::vector<portal::PortalInstance>& outPortals,
         }
     }
 
-    if (!nearestPortal || minPortalDist > 2.95f || !inPlayHud || textActive || travelling) return;
+    if (!nearestPortal || minPortalDist > 2.95f || !inPlayHud || textActive || travelling || dead) return;
     // Still forming (its caster is channeling): no prompt, no travel.
     if (nearestPortal->closing || now - std::min(now, nearestPortal->openedTick) < portal::kPortalFormMs) return;
     const auto& nearestEnd = nearestIsFieldSide ? nearestPortal->fieldEnd : nearestPortal->baseEnd;
@@ -2189,6 +2213,8 @@ extern "C" __declspec(dllexport) int TownPortalDevControl(
     }
     case 5: break;
     case 13: g_devInteractRequested=true;break;
+    case 17: g_devCastKeyUntil=GetTickCount64()+1300;break;
+    case 18: g_devCastKeyUntil=GetTickCount64()+100;break;
     case 15: if(!portal::casting::Start(client))return -6;g_castUntil=GetTickCount64()+portal::casting::DurationMs();break;
     case 16: {
         const auto* p=request->from;
@@ -2321,7 +2347,7 @@ GREENEYE_MOD_START {
     }
 
     if (serverSide) {
-        Log("Town Portals 1.0.8: server companion loaded");
+        Log("Town Portals 1.0.9: server companion loaded");
         return true;
     }
 
@@ -2384,7 +2410,7 @@ GREENEYE_MOD_START {
     portal::casting::Init(host);
     LogGraphicsAdapters();
 
-    Log("Town Portals 1.0.8: press T (OpenPortalKey in town-portal.ini) to open a portal to your Preferred Spawn Flame Altar");
+    Log("Town Portals 1.0.9: press T (OpenPortalKey in town-portal.ini) to open a portal to your Preferred Spawn Flame Altar");
     return true;
 }
 

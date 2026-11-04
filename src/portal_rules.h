@@ -187,7 +187,7 @@ inline bindings::Keys InteractKeys() {
         GetPrivateProfileStringW(L"Controls", L"InteractKey", L"Auto", value, 32, Path().c_str());
         fixed = _wcsicmp(value, L"Auto") ? ParseKey(value) : 0;
     }
-    if (fixed) return {{fixed, 0}, 1, true};
+    if (fixed) { bindings::Keys keys{{fixed, 0}, 1, true}; keys.pad = bindings::GameInteractKeys().pad; return keys; }
     return bindings::GameInteractKeys();
 }
 
