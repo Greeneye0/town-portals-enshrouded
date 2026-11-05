@@ -18,7 +18,7 @@ cd /d "%~dp0"
 set "PORTAL_OUTPUT=bin\loader"
 set "PORTAL_DEFINES="
 if defined TOWN_PORTAL_DEV set "PORTAL_OUTPUT=bin-dev\loader"
-if defined TOWN_PORTAL_DEV set "PORTAL_DEFINES=/DTOWN_PORTAL_DEV"
+if defined TOWN_PORTAL_DEV set "PORTAL_DEFINES=/DTOWN_PORTAL_DEV /DGREENEYE_INPUT_TEST"
 if not exist "%PORTAL_OUTPUT%" mkdir "%PORTAL_OUTPUT%"
 if not exist build mkdir build
 

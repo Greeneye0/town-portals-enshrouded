@@ -14,6 +14,7 @@
 #include "portal_colors.h"
 #include "portal_names.h"
 #include "portal_rules.h"
+#include "game_hints.h"
 #include "portal_map_warp.h"
 #include "portal_map_labels.h"
 #include "portal_default_images.h"
@@ -1246,12 +1247,13 @@ void DrawEndpoint(void* widget, const CameraFrame& cam, const Candidate& candida
 // InputHintStyle (0x78 bytes): +0x2F auto label (off), +0x3C fade, +0x4C skips the hold-ring
 // path, +0x54 key size in px (the game's prompt uses 32), +0x58 the label. The row is drawn in
 // its own widget anchored at the point.
-// hidKey: 0 for the game's interact action, else a key's USB HID usage drawn as a key cap.
-bool DrawNativePrompt(float x, float y, const char* label, uint16_t hidKey = 0) {
-    if (!(hidKey ? (void*)g_bindingRow : (void*)g_hintRow) || !g_hintStyleInit || !g_named || !g_end) return false;
+// binding: null for the game's interact action, else what to show: its key cap or the controller's
+// icon, whichever the game is showing (common/game_hints.h).
+bool DrawNativePrompt(float x, float y, const char* label, const greeneye::input::Binding* binding = nullptr, bool holdRow = false) {
+    if (!(binding ? (void*)g_bindingRow : (void*)g_hintRow) || !g_hintStyleInit || !g_named || !g_end) return false;
     __try {
         Widget box;
-        UiText name = MakeText(hidKey ? "townPortalHoldClose" : "townPortalInteraction");
+        UiText name = MakeText(holdRow ? "townPortalHoldClose" : "townPortalInteraction"); // each row its own widget
         g_named(box.raw, &name);
         if (uint8_t* node = box.Handle()) {
             *reinterpret_cast<uint16_t*>(node + 0x6e) = 0x0101;
@@ -1265,33 +1267,50 @@ bool DrawNativePrompt(float x, float y, const char* label, uint16_t hidKey = 0) 
         *reinterpret_cast<float*>(style + 0x3c) = 1.0f;
         *reinterpret_cast<float*>(style + 0x54) = 32.0f;
         *reinterpret_cast<UiText*>(style + 0x58) = MakeText(label);
-        if (hidKey) {
-            alignas(16) uint8_t binding[kBindingSize]{};
-            binding[0] = 1; // Key
-            std::memcpy(binding + 2, &hidKey, sizeof(hidKey));
-            g_bindingRow(binding, style);
+        if (binding) {
+            alignas(16) uint8_t record[kBindingSize]{};
+            greeneye::hints::WriteRecord(record, *binding);
+            g_bindingRow(record, style);
         } else
             g_hintRow(kInteractAction, style);
         g_end(box.raw);
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         // fall back to the mod's own prompt from now on
-        if (hidKey) g_bindingRow = nullptr;
+        if (binding) g_bindingRow = nullptr;
         else g_hintRow = nullptr;
         return false;
     }
 }
 
-// A key cap's text ("T", "5", "F4") as a USB HID usage; 0 for keys without one here.
-uint16_t HidFromCap(const std::string& cap) {
-    if (cap.size() == 1 && cap[0] >= 'A' && cap[0] <= 'Z') return uint16_t(0x04 + cap[0] - 'A');
-    if (cap.size() == 1 && cap[0] >= '1' && cap[0] <= '9') return uint16_t(0x1e + cap[0] - '1');
-    if (cap == "0") return 0x27;
-    if (cap.size() >= 2 && cap.size() <= 3 && cap[0] == 'F') {
-        const int n = std::atoi(cap.c_str() + 1);
-        if (n >= 1 && n <= 12) return uint16_t(0x3a + n - 1);
+// What the hold row shows: the cast key. A key the game has no cap for gets the mod's own.
+bool CastHasNativeTip(const greeneye::input::Binding& cast) {
+    for (int k = 0; k < cast.keyCount; ++k)
+        if (cast.keys[k].vk && greeneye::hints::VkToHid(cast.keys[k].vk)) return true;
+    return cast.padCount > 0;
+}
+
+// The binding the interact prompt shows when town-portal.ini chooses it, or null for the game's action.
+const greeneye::input::Binding* InteractTip() {
+    static greeneye::input::Binding tip;
+    const auto keys = portal::rules::InteractKeys();
+    const greeneye::input::Binding& choice = portal::rules::InteractPadChoice();
+    if (!keys.custom && !choice.padCount) return nullptr;
+    if (keys.custom && portal::rules::InteractIsAuto() && !choice.padCount) return nullptr;
+    tip = choice;
+    if (!tip.keyCount)
+        for (int k = 0; k < keys.count && k < 2; ++k) {
+            tip.keys[k] = greeneye::input::KeyChord{uint8_t(keys.vk[k])};
+            tip.keyCount = k + 1;
+        }
+    if (!tip.padCount) {
+        const auto pad = portal::bindings::GameInteractKeys().pad;
+        tip.pads[0].buttons = pad.buttons;
+        tip.pads[0].lt = pad.leftTrigger;
+        tip.pads[0].rt = pad.rightTrigger;
+        tip.padCount = 1;
     }
-    return 0;
+    return &tip;
 }
 
 struct PromptAnchor { float x = 0, y = 0, z = 0; bool valid = false; };
@@ -1446,7 +1465,7 @@ void DrawFrameBody(Widget& widget, const CameraFrame& cam, const std::vector<Por
         PromptPosition(cam,sx,sy);
         if (!g_hintRow) DrawSolidRect(widget.raw,sx,sy-kKeyCap*0.5f,kKeyCap,kKeyCap,0xfff4f1edu,1.0f);
         const PromptParts parts(prompt);
-        if (!parts.holdCap.empty()&&!(g_bindingRow&&g_hintRow&&HidFromCap(parts.holdCap)))
+        if (!parts.holdCap.empty()&&!(g_bindingRow&&g_hintRow&&CastHasNativeTip(portal::rules::OpenPortalBinding())))
             DrawNineSliceBox(widget.raw,kAssetRoundedBox,sx+1,parts.HoldY(sy)-kHoldCap*0.5f,parts.HoldCapWidth(),kHoldCap,0xfff4f1edu,1.0f,6,1.15f); // the box image is greyish
     }
     return;
@@ -1508,10 +1527,13 @@ void DrawFrameBody(Widget& widget, const CameraFrame& cam, const std::vector<Por
         // A prompt with a second part ("Return to X  /  Closes your portal") shows that part on
         // its own line under the first; a hold row goes under both.
         const PromptParts parts(prompt);
+#ifdef GREENEYE_INPUT_TEST
+        (void)greeneye::hints::PadInUse(); // tools/inputtest.py can force gamepad tips
+#endif
         const std::string& first=parts.first;
         const std::string& second=parts.second;
         uint8_t* assets=Assets();
-        if (DrawNativePrompt(sx,sy,first.c_str())) {
+        if (DrawNativePrompt(sx,sy,first.c_str(),InteractTip())) {
             // Drawn by the game's own prompt code.
         } else if (assets) {
             const uint8_t* style=PromptStyle(assets);
@@ -1521,8 +1543,9 @@ void DrawFrameBody(Widget& widget, const CameraFrame& cam, const std::vector<Por
         if (!second.empty()&&assets)
             DrawLabel(sx+kKeyCap+12,sy+28,900,40,second.c_str(),0xffd8d2c8u,0.9f,0,PromptStyle(assets));
         // The hold row: the game's own key cap when it has the key, as for E.
-        if (!parts.holdCap.empty()&&g_hintRow&&HidFromCap(parts.holdCap)&&
-            DrawNativePrompt(sx,parts.HoldY(sy),parts.holdText.c_str(),HidFromCap(parts.holdCap))) {
+        const greeneye::input::Binding castTip=portal::rules::OpenPortalBinding();
+        if (!parts.holdCap.empty()&&g_hintRow&&CastHasNativeTip(castTip)&&
+            DrawNativePrompt(sx,parts.HoldY(sy),parts.holdText.c_str(),&castTip,true)) {
         } else if (!parts.holdCap.empty()&&assets) {
             const float hy=parts.HoldY(sy);
             // The prompt's own (outlined) style in the cap's dark: a bold letter like the game's E.

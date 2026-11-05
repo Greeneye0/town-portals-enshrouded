@@ -12,6 +12,7 @@
 #include <cwchar>
 #include <cwctype>
 #include "portal_bindings.h"
+#include "input_binds.h"
 
 namespace portal::rules {
 
@@ -58,10 +59,14 @@ inline constexpr const char* kControlsSection =
     "; The key that opens your portal: a letter or digit, F1-F24, Num0-Num9, Insert, Delete,\n"
     "; Home, End, PageUp, PageDown, Tab, Space, Enter, Up, Down, Left, Right, Mouse4, Mouse5,\n"
     "; MiddleMouse, a punctuation key such as ; or ], or a key code such as 0x54. Default T.\n"
+    "; Add a controller button after a comma: Pad: and any of A B X Y LB RB LT RT LS RS View Menu\n"
+    "; Up Down Left Right, joined with +. Default Pad:LB+Y (hold LB, press Y).\n"
+    "; NoPad turns the controller button off. Changes apply within a second.\n"
     "; Tap it to open a portal; hold it for a second to close your open portal.\n"
-    "OpenPortalKey=T\n"
+    "OpenPortalKey=T, Pad:LB+Y\n"
     "; The key that uses a portal: Auto follows the game's own Interact binding (E unless you\n"
-    "; changed it in the game's controls), or a key as for OpenPortalKey.\n"
+    "; changed it in the game's controls), or a key as for OpenPortalKey. On a controller it\n"
+    "; follows the game's Interact button too; add Pad:... after a comma to choose another.\n"
     "InteractKey=Auto\n"
     "; Your character speaks when a portal can't be opened: true or false.\n"
     "VoiceFeedback=true\n"
@@ -76,7 +81,8 @@ inline constexpr const char* kVoiceKey =
     "VoiceFeedback=true\n";
 inline constexpr const char* kInteractKey =
     "; The key that uses a portal: Auto follows the game's own Interact binding (E unless you\n"
-    "; changed it in the game's controls), or a key as for OpenPortalKey.\n"
+    "; changed it in the game's controls), or a key as for OpenPortalKey. On a controller it\n"
+    "; follows the game's Interact button too; add Pad:... after a comma to choose another.\n"
     "InteractKey=Auto\n";
 inline constexpr const char* kQualityKey =
     "; Portal effects: Auto follows the game's graphics settings (lighter on Low and Medium),\n"
@@ -161,33 +167,75 @@ inline int ParseKey(const wchar_t* name) {
     return 0;
 }
 
-// The key that opens this player's portal (T unless set), read again at most once a second.
-inline int OpenPortalKey() {
-    static int key = 'T';
+// An .ini value as text the shared binding parser reads.
+inline std::string NarrowValue(const wchar_t* value) {
+    std::string text;
+    for (; *value; ++value) text += *value < 128 ? char(*value) : '?';
+    return text;
+}
+
+// The binding that opens this player's portal (T and LB+Y unless set), read again at most once a
+// second. A value from before the shared format that only ParseKey knows (a punctuation key of this
+// keyboard layout) still counts, with the default controller button.
+inline greeneye::input::Binding OpenPortalBinding() {
+    using namespace greeneye::input;
+    static const Binding fallback = MakeBinding("T, Pad:LB+Y");
+    static Binding binding = fallback;
     static uint64_t readAt = 0;
     const uint64_t now = GetTickCount64();
-    if (readAt && now - readAt <= 1000) return key;
+    if (readAt && now - readAt <= 1000) return binding;
     readAt = now;
-    wchar_t value[32]{};
-    GetPrivateProfileStringW(L"Controls", L"OpenPortalKey", L"T", value, 32, Path().c_str());
-    const int parsed = ParseKey(value);
-    key = parsed ? parsed : 'T';
-    return key;
+    wchar_t value[128]{};
+    GetPrivateProfileStringW(L"Controls", L"OpenPortalKey", L"", value, 128, Path().c_str());
+    if (!ParseBinding(NarrowValue(value), fallback, binding)) {
+        binding = fallback;
+        if (const int key = ParseKey(value)) {
+            binding.keys[0] = KeyChord{uint8_t(key)};
+            binding.keyCount = 1;
+        }
+    }
+    return binding;
 }
 
 // The keys that use a portal: InteractKey in the .ini, or with Auto (the default) the game's own
 // Interact binding (portal_bindings.h). Read again at most once a second.
+// The controller buttons chosen after a comma in InteractKey; none: the game's own (bindings::Keys::pad).
+inline greeneye::input::Binding& InteractPadChoice() {
+    static greeneye::input::Binding choice;
+    return choice;
+}
+// InteractKey is Auto: the keys are the game's.
+inline bool& InteractIsAuto() {
+    static bool isAuto = true;
+    return isAuto;
+}
 inline bindings::Keys InteractKeys() {
-    static int fixed = 0;
+    using namespace greeneye::input;
+    static int fixed[2]{};
+    static int fixedCount = 0;
     static uint64_t readAt = 0;
     const uint64_t now = GetTickCount64();
     if (!readAt || now - readAt > 1000) {
         readAt = now;
-        wchar_t value[32]{};
-        GetPrivateProfileStringW(L"Controls", L"InteractKey", L"Auto", value, 32, Path().c_str());
-        fixed = _wcsicmp(value, L"Auto") ? ParseKey(value) : 0;
+        wchar_t value[128]{};
+        GetPrivateProfileStringW(L"Controls", L"InteractKey", L"Auto", value, 128, Path().c_str());
+        std::string text = NarrowValue(value);
+        InteractIsAuto() = _strnicmp(text.c_str(), "Auto", 4) == 0;
+        if (InteractIsAuto()) { // Auto, optionally with Pad:...
+            text.erase(0, 4);
+            const size_t comma = text.find(',');
+            text = comma == std::string::npos ? "" : text.substr(comma + 1);
+        }
+        Binding parsed;
+        fixedCount = 0;
+        if (ParseBinding(text, Binding{}, parsed)) {
+            for (int k = 0; k < parsed.keyCount && fixedCount < 2; ++k) fixed[fixedCount++] = parsed.keys[k].vk;
+        } else if (const int key = ParseKey(value)) {
+            fixed[fixedCount++] = key;
+        }
+        InteractPadChoice() = parsed;
     }
-    if (fixed) { bindings::Keys keys{{fixed, 0}, 1, true}; keys.pad = bindings::GameInteractKeys().pad; return keys; }
+    if (fixedCount) { bindings::Keys keys{{fixed[0], fixedCount > 1 ? fixed[1] : 0}, fixedCount, true}; keys.pad = bindings::GameInteractKeys().pad; return keys; }
     return bindings::GameInteractKeys();
 }
 

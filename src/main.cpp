@@ -28,6 +28,7 @@
 #include "portal_snapshot_timing.h"
 #include "portal_cast.h"
 #include "portal_rules.h"
+#include "game_hints.h"
 #include "portal_voicepack.h"
 #include "portal_default_images.h"
 #include "portal_default_view.h"
@@ -215,7 +216,7 @@ bool IsTextInputActive() {
 }
 
 bool KeyDown(int vk) {
-    return (GetAsyncKeyState(vk) & 0x8000) != 0;
+    return greeneye::input::KeyDown(vk);
 }
 
 // The interact keys in force (portal::rules::InteractKeys), published for the key hook and
@@ -247,19 +248,42 @@ bool InteractKeyDown() {
     return false;
 }
 
-// The gamepad button the portal prompt shows for the game's interact (Y unless rebound), through XInput
-// (Steam Input and Proton provide it too). Asking about an empty slot can stall for a while,
-// so slots without a pad are tried again only every 2 s.
+// The key cap for the cast binding on the prompt: the controller's when a pad was used lately.
+uint64_t g_padUsedAt = 0;
+std::string CastKeyCap(const greeneye::input::Binding& cast) {
+    using namespace greeneye::input;
+    const bool padLately = g_padUsedAt && GetTickCount64() - g_padUsedAt < 30000;
+    if (cast.padCount && (padLately || !cast.keyCount)) {
+        Binding pad;
+        pad.pads[0] = cast.pads[0];
+        pad.padCount = 1;
+        const std::string text = BindingToText(pad);
+        const size_t colon = text.find("Pad:");
+        return colon == std::string::npos ? text : text.substr(colon + 4);
+    }
+    if (!cast.keyCount) return "?";
+    const KeyChord& key = cast.keys[0];
+    std::string text;
+    if (key.ctrl) text += "Ctrl+";
+    if (key.shift) text += "Shift+";
+    if (key.alt) text += "Alt+";
+    return text + (key.vk ? KeyToText(key.vk) : std::string());
+}
+
+// The gamepad button that uses a portal (the game's Interact, Y unless rebound; or InteractKey's Pad:
+// part), through XInput (Steam Input and Proton provide it too).
+std::atomic<uint16_t> g_interactPadButtons{0x8000};
 bool PadInteractDown() {
-    using GetStateFn = DWORD(WINAPI*)(DWORD, XINPUT_STATE*);
-    static GetStateFn getState = [] {
-        HMODULE module = GetModuleHandleW(L"xinput1_4.dll");
-        if (!module) module = LoadLibraryW(L"xinput1_4.dll");
-        if (!module) module = LoadLibraryW(L"xinput9_1_0.dll");
-        return module ? reinterpret_cast<GetStateFn>(GetProcAddress(module, "XInputGetState")) : nullptr;
-    }();
-    static uint64_t retryAt[XUSER_MAX_COUNT]{};
-    if (!getState) return false;
+    using namespace greeneye::input;
+    const PadState pad = ReadPad();
+    (void)portal::rules::InteractKeys(); // reads the file's choice
+    const Binding& choice = portal::rules::InteractPadChoice();
+    if (choice.padCount) {
+        uint16_t buttons = 0;
+        for (int k = 0; k < choice.padCount; ++k) buttons |= choice.pads[k].buttons;
+        g_interactPadButtons = buttons;
+        return PadHeld(choice, pad);
+    }
     const auto binding = portal::bindings::GameInteractKeys().pad;
     static uint16_t loggedButtons = 0;
     if (binding.buttons != loggedButtons) {
@@ -268,17 +292,24 @@ bool PadInteractDown() {
         std::snprintf(line, sizeof(line), "Town Portal: gamepad Interact buttons 0x%04X%s%s", binding.buttons, binding.leftTrigger ? " + left trigger" : "", binding.rightTrigger ? " + right trigger" : "");
         Log(line);
     }
+    g_interactPadButtons = binding.buttons;
+    return (pad.buttons & binding.buttons) != 0 || (binding.leftTrigger && pad.lt) || (binding.rightTrigger && pad.rt);
+}
+
+// What the game reads from a pad: the cast chord's button while its modifier is held on the play
+// screen, and the interact button while the portal prompt shows (as PortalKeyHook does for the key),
+// each hidden until it comes up.
+greeneye::input::SharedBinding g_castPad;
+std::atomic<uint64_t> g_castPadLiveUntil{0};
+void PortalPadFilter(XINPUT_GAMEPAD& pad, DWORD user) {
+    using namespace greeneye::input;
+    static PadHide hide;
     const uint64_t now = GetTickCount64();
-    bool down = false;
-    for (DWORD pad = 0; pad < XUSER_MAX_COUNT; ++pad) {
-        if (now < retryAt[pad]) continue;
-        XINPUT_STATE state{};
-        if (getState(pad, &state) != ERROR_SUCCESS) { retryAt[pad] = now + 2000; continue; }
-        down |= (state.Gamepad.wButtons & binding.buttons) != 0;
-        down |= binding.leftTrigger && state.Gamepad.bLeftTrigger > XINPUT_GAMEPAD_TRIGGER_THRESHOLD;
-        down |= binding.rightTrigger && state.Gamepad.bRightTrigger > XINPUT_GAMEPAD_TRIGGER_THRESHOLD;
-    }
-    return down;
+    uint16_t mask = 0;
+    if (now < g_castPadLiveUntil.load())
+        mask |= PadHideMask(g_castPad.Get(), PadState{pad.wButtons, pad.bLeftTrigger > XINPUT_GAMEPAD_TRIGGER_THRESHOLD, pad.bRightTrigger > XINPUT_GAMEPAD_TRIGGER_THRESHOLD});
+    if (now < g_portalPromptUntil.load()) mask |= g_interactPadButtons.load();
+    pad.wButtons = hide.Apply(pad.wButtons, user, mask);
 }
 
 void SendHiddenLine(void* gameClient, std::string_view text) {
@@ -1853,7 +1884,7 @@ void RunGameplayTick(void* app, std::vector<portal::PortalInstance>& outPortals,
     }
     bool focused = IsGameFocused();
 #ifdef TOWN_PORTAL_DEV
-    focused = focused || GetTickCount64() < g_devCastKeyUntil + 250; // the simulated key needs no focus
+    focused = focused || GetTickCount64() < g_devCastKeyUntil + 250 || greeneye::input::GameHasFocus(); // simulated keys need no focus
 #endif
     bool textActive = IsTextInputActive();
     bool travelling = g_departure.gate.Active() || g_arrival.since || portal::sceneprobe::SnapshotBusy();
@@ -1864,10 +1895,15 @@ void RunGameplayTick(void* app, std::vector<portal::PortalInstance>& outPortals,
     bool canAcceptHotkeys = inPlayHud && focused && !textActive && !travelling && !dead;
     if (focused) InstallKeyHook();
 
-    // The cast key (OpenPortalKey in town-portal.ini, T by default): a tap opens a portal when
+    // The cast key (OpenPortalKey in town-portal.ini, T and LB+Y by default): a tap opens a portal when
     // the key comes up; held for kHoldToCloseMs it closes this player's open portal instead.
-    bool tDown = canAcceptHotkeys && KeyDown(portal::rules::OpenPortalKey()) &&
-                 !KeyDown(VK_CONTROL) && !KeyDown(VK_MENU) && !KeyDown(VK_SHIFT);
+    const greeneye::input::Binding castBinding = portal::rules::OpenPortalBinding();
+    g_castPad.Set(castBinding);
+    if (inPlayHud) g_castPadLiveUntil = GetTickCount64() + 250;
+    const greeneye::input::PadState padNow = greeneye::input::ReadPad();
+    if (padNow.buttons || padNow.lt || padNow.rt) g_padUsedAt = GetTickCount64();
+    bool tDown = canAcceptHotkeys && (greeneye::input::KeysHeld(castBinding, [](int vk) { return KeyDown(vk); }) ||
+                                      greeneye::input::PadHeld(castBinding, padNow));
 #ifdef TOWN_PORTAL_DEV
     tDown = tDown || (canAcceptHotkeys && GetTickCount64() < g_devCastKeyUntil);
 #endif
@@ -1887,7 +1923,13 @@ void RunGameplayTick(void* app, std::vector<portal::PortalInstance>& outPortals,
     }
     g_tWasDown = tDown;
 
-    bool ePhysical = InteractKeyDown() || PadInteractDown();
+    // The cast chord can hold the Interact button itself (LB+Y): that press is the cast's until it comes
+    // up, or holding it to close a portal would travel through it.
+    static bool padInteractIsCast = false;
+    const bool padInteract = PadInteractDown();
+    if (greeneye::input::PadHeld(castBinding, padNow)) padInteractIsCast = true;
+    else if (!padInteract) padInteractIsCast = false;
+    bool ePhysical = InteractKeyDown() || (padInteract && !padInteractIsCast);
     bool eDown = canAcceptHotkeys && ePhysical &&
                  !KeyDown(VK_CONTROL) && !KeyDown(VK_MENU);
     bool ePressed = eDown && !g_eWasDown;
@@ -2036,11 +2078,8 @@ void RunGameplayTick(void* app, std::vector<portal::PortalInstance>& outPortals,
     // The owner's own portal gets a second row: the cast key, held, closes it. Sent to the
     // renderer after a \x1f as "<key cap>\x1f<text>".
     if (isOwner) {
-        const int vk = portal::rules::OpenPortalKey();
         char cap[24]{};
-        if ((vk >= 'A' && vk <= 'Z') || (vk >= '0' && vk <= '9')) cap[0] = char(vk);
-        else if (!GetKeyNameTextA(LONG(MapVirtualKeyW(UINT(vk), MAPVK_VK_TO_VSC) << 16), cap, sizeof(cap)))
-            cap[0] = '?';
+        strncpy_s(cap, CastKeyCap(portal::rules::OpenPortalBinding()).c_str(), _TRUNCATE);
         const size_t used = std::strlen(outPrompt);
         if (used < promptCap)
             std::snprintf(outPrompt + used, promptCap - used, "\x1f%s\x1f%s", cap,
@@ -2208,7 +2247,17 @@ extern "C" __declspec(dllexport) int TownPortalDevControl(
     if (request->action && request->action!=5 && request->action!=8 && ui[0x1cd8]!=1) return -3;
     switch(request->action) {
     case 0: break;
-    case 1: if(g_facing.known){dx=g_facing.x;dz=g_facing.z;} TryOpenPortalAtPlayer(client,ui,x,y,z,dx,dz); break;
+    case 1:
+        if(g_facing.known){dx=g_facing.x;dz=g_facing.z;}
+        // Dev: where this way has no room, the first way round that has, so a test need not move the character.
+        for (int turn=0;turn<8;++turn) {
+            const float a=float(turn)*0.7853982f,c=std::cos(a),s=std::sin(a),tx=dx*c-dz*s,tz=dx*s+dz*c;
+            float spotY=y;
+            const char* why="";
+            if (CheckFieldSpot(x,y,z,tx,tz,2.8f,spotY,&why)!=SpotCheck::blocked) {dx=tx;dz=tz;break;}
+        }
+        TryOpenPortalAtPlayer(client,ui,x,y,z,dx,dz);
+        break;
     case 2:
         if (hasOwn) {
             portal::travel::ClosePortalByOwner(owner,own.portalId);
@@ -2360,7 +2409,7 @@ GREENEYE_MOD_START {
     }
 
     if (serverSide) {
-        Log("Town Portals 1.0.11: server companion loaded");
+        Log("Town Portals 1.0.12: server companion loaded");
         return true;
     }
 
@@ -2415,6 +2464,9 @@ GREENEYE_MOD_START {
     }
     g_nextLoop = reinterpret_cast<LoopFn>(host->hook(loop, reinterpret_cast<void*>(LoopHook), 13, nullptr, 0));
     g_nextPlay = reinterpret_cast<LoopFn>(host->hook(play, reinterpret_cast<void*>(PlayHook), 18, nullptr, 0));
+    if (!serverSide) greeneye::hints::Init(host);
+    if (!serverSide && !greeneye::input::InstallPadFilter(host, &PortalPadFilter))
+        Log("Town Portal: XInput is not as expected; the game also sees the controller's portal buttons");
     if (!g_nextLoop || !g_nextPlay) {
         g_paused = true;
         Log("Town Portal: hook installation failed");
@@ -2423,7 +2475,7 @@ GREENEYE_MOD_START {
     portal::casting::Init(host);
     LogGraphicsAdapters();
 
-    Log("Town Portals 1.0.11: press T (OpenPortalKey in town-portal.ini) to open a portal to your Preferred Spawn Flame Altar");
+    Log("Town Portals 1.0.12: press T or LB+Y on a controller (OpenPortalKey in town-portal.ini) to open a portal to your Preferred Spawn Flame Altar");
     return true;
 }
 
