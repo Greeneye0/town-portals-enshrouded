@@ -45,6 +45,10 @@ bin\test_patches.exe
 if errorlevel 1 exit /b 1
 
 echo Built %PORTAL_OUTPUT%\town-portal.dll for Greeneye Loader API 2
+cl /nologo /std:c++20 /O2 /EHsc /MT /W4 tests\test_host_identity.cpp /Fo:build\test_host_identity.obj /Fe:bin\test_host_identity.exe
+if errorlevel 1 exit /b 1
+bin\test_host_identity.exe
+if errorlevel 1 exit /b 1
 cl /nologo /std:c++20 /O2 /EHsc /MT /W4 tests\test_render_math.cpp /Fo:build\test_render_math.obj /Fe:bin\test_render_math.exe
 if errorlevel 1 exit /b 1
 bin\test_render_math.exe

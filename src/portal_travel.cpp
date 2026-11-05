@@ -6,6 +6,7 @@
 #include "portal_rules.h"
 #include "portal_names.h"
 #include "portal_snapshot_share.h"
+#include "portal_host_identity.h"
 #include <atomic>
 #include <cmath>
 #include <cstdio>
@@ -91,6 +92,7 @@ std::atomic<void*> g_server{nullptr};
 std::atomic<uint64_t> g_localAccount{0};
 std::atomic<uint32_t> g_localEntity{0};
 std::atomic<uint32_t> g_observedHostEntity{0};
+std::atomic<bool> g_hostEntityConfirmed{false};
 std::atomic<bool> g_hostAnswered{false};
 std::atomic<bool> g_paused{false};
 std::atomic<bool> g_faulted{false};
@@ -100,6 +102,12 @@ std::atomic<bool> g_faulted{false};
 std::atomic<bool> g_nativeTravel{false};
 
 std::mutex g_lock;
+HostIdentity g_hostIdentity; // under g_lock; published through the two atomics above
+
+void PublishHostIdentity() {
+    g_observedHostEntity.store(g_hostIdentity.Current());
+    g_hostEntityConfirmed.store(g_hostIdentity.Confirmed());
+}
 
 enum class Stage { none, resolving, injecting, armed, applying, cancelling };
 
@@ -139,6 +147,9 @@ struct EcsPlayerSlot {
     float wz = 0.0f;
 };
 EcsPlayerSlot g_ecsPlayers[16]{};
+// Where each player stands, for HostIdentity: the Apply iterator above only sees a player with a
+// teleport pending, so these are read from the player tick.
+EcsPlayerSlot g_hostSpots[16]{};
 
 struct WorldState {
     void* storage = nullptr;
@@ -206,7 +217,10 @@ void MarkDirty(void* wrapper) {
 uint32_t SenderEntity(uint64_t account) {
     auto* s = static_cast<uint8_t*>(g_server.load());
     if (!account) return 0;
-    if (account == g_localAccount.load()) return g_localEntity.load();
+    if (account == g_localAccount.load()) {
+        if (g_hostEntityConfirmed.load()) return g_observedHostEntity.load();
+        return g_localEntity.load();
+    }
     for (int i = 0; s && i < 16; ++i) {
         auto* slot = s + 0x1e0 + i * 0x148;
         if (at<uint32_t>(slot, 0) && at<uint64_t>(slot, 0x48) == account) {
@@ -520,15 +534,15 @@ void PlayerTick(void* ctx, void* descriptors) {
     uint64_t now = GetTickCount64();
     std::lock_guard guard(g_lock);
 
-    // Hosting a world, every player's tick passes here, the friends' too. Which one is this
-    // machine's player is only certain while it ticks alone; with others in the world it is
-    // kept from then (taking whoever ticked last moved the host's travel onto a friend's
-    // character and refused the host's portals until a fast travel).
+    // Hosting a world, every player's tick passes here, the friends' too. Taking whoever ticked
+    // last moved the host's travel onto a friend's character and refused the host's portals
+    // until a fast travel. Tick timing is only a first guess: see HostIdentity.
     static uint64_t tickedAt[17]{};
     if (g_hostWorld.storage && g_hostWorld.storage != storage) {
         for (auto& p : g_requests) p = {};
         g_hostWorld.terrain = nullptr;
-        g_observedHostEntity.store(0);
+        g_hostIdentity.Reset();
+        PublishHostIdentity();
         for (auto& t : tickedAt) t = 0;
     }
     g_hostWorld.storage = storage;
@@ -538,17 +552,30 @@ void PlayerTick(void* ctx, void* descriptors) {
         tickedAt[id] = now;
         for (uint32_t other = 1; other <= 16; ++other)
             if (other != id && tickedAt[other] && now - tickedAt[other] < 1500) alone = false;
-        if (alone) g_observedHostEntity.store(id);
-        else if (!g_observedHostEntity.load() && id == g_localEntity.load()) g_observedHostEntity.store(id);
+        g_hostIdentity.OnTick(id, alone, g_localEntity.load());
+        if (g_getComponent && now - g_hostSpots[id - 1].seenTick >= 100) {
+            uint16_t transformType = 133;
+            void* transformRef[2]{};
+            g_getComponent(transformRef, storage, &transformType, id);
+            if (const auto* transform = static_cast<const uint8_t*>(transformRef[0])) {
+                float norm = 0;
+                for (int i = 0; i < 4; ++i) { float q = field<float>(transform, 0x18 + i * 4); norm += q * q; }
+                const float px = static_cast<float>(static_cast<double>(field<int64_t>(transform, 0x00)) * kInvFixedScale);
+                const float py = static_cast<float>(static_cast<double>(field<int64_t>(transform, 0x08)) * kInvFixedScale);
+                const float pz = static_cast<float>(static_cast<double>(field<int64_t>(transform, 0x10)) * kInvFixedScale);
+                if (std::isfinite(norm) && std::fabs(norm - 1) <= 0.05f && px > 100.0f && px < 12000.0f && pz > 100.0f && pz < 12000.0f)
+                    g_hostSpots[id - 1] = {id, now, px, py, pz};
+            }
+        }
+        PublishHostIdentity();
     }
-    const uint32_t own = g_observedHostEntity.load();
 
     uint64_t localAcc = g_localAccount.load();
     for (auto& p : g_requests) {
         if (p.stage == Stage::none) continue;
         // Match either exact entity ID or local host player account when world reassigned entity ID (e.g. entity=2)
         if (p.entity != id) {
-            if (p.account != 0 && p.account == localAcc && !g_server.load() && (alone || id == own)) {
+            if (p.account != 0 && p.account == localAcc && !g_server.load() && g_hostIdentity.MayBeOwn(id, alone)) {
                 p.entity = id;
             } else {
                 continue;
@@ -1158,6 +1185,29 @@ bool HostsWorld() {
     return g_hostWorld.storage && GetTickCount64() - g_hostWorld.seen <= 2000;
 }
 
+void ObserveHostPosition(float wx, float wz) {
+    if (g_faulted) return;
+    std::lock_guard guard(g_lock);
+    const uint64_t now = GetTickCount64();
+    if (!g_hostWorld.storage || now - g_hostWorld.seen > 2000) return;
+    PlayerSpot spots[16]{};
+    size_t count = 0;
+    for (const auto& s : g_hostSpots) {
+        if (s.entity && now >= s.seenTick && now - s.seenTick < 1000) spots[count++] = {s.entity, s.wx, s.wz};
+    }
+    const uint32_t before = g_hostIdentity.Current();
+    const bool wasConfirmed = g_hostIdentity.Confirmed();
+    const bool changed = g_hostIdentity.Observe(wx, wz, spots, count, now);
+    PublishHostIdentity();
+    char line[128]{};
+    if (changed && before) {
+        std::snprintf(line, sizeof(line), "Town Portal: this host is player %u, not %u (position check)", g_hostIdentity.Current(), before);
+    } else if (!wasConfirmed && g_hostIdentity.Confirmed()) {
+        std::snprintf(line, sizeof(line), "Town Portal: this host is player %u (position check)", g_hostIdentity.Current());
+    }
+    if (line[0]) Log(line);
+}
+
 bool HostAnswered() {
     return g_hostAnswered.load();
 }
@@ -1170,7 +1220,7 @@ Submission SubmitTeleport(uint32_t entity, const FixedPos& target) {
         }
     }
     uint32_t obs = g_observedHostEntity.load();
-    if (!g_server.load() && obs != 0 && obs <= 16) {
+    if ((g_hostEntityConfirmed.load() || !g_server.load()) && obs != 0 && obs <= 16) {
         entity = obs;
     }
     return QueueInternal(entity, g_localAccount.load(), GetTickCount64(), target)
@@ -1391,8 +1441,9 @@ void CloseSilentPortals(uint64_t localAccount, uint64_t silentMs) {
 void ClearAllPortals() {
     // Leaving or switching worlds: the entity seen while hosting the last one is not this
     // player's in the next (a stale one made the field check trace into the player's own body).
-    g_observedHostEntity.store(0);
     std::lock_guard guard(g_lock);
+    g_hostIdentity.Reset();
+    PublishHostIdentity();
     for (auto& slot : g_portals) {
         slot = {};
     }

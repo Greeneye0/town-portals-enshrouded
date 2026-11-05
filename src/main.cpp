@@ -1814,6 +1814,7 @@ void RunGameplayTick(void* app, std::vector<portal::PortalInstance>& outPortals,
         portal::render::ClearNativeEffects();
     }
     g_lastWorld = currentWorld;
+    if (gotPos) portal::travel::ObserveHostPosition(px, pz);
 
     g_hostMod = EnsureHostHandshake(gameClient, currentWorld);
     if (g_hostMod == HostMod::present) AskHostRules(gameClient, currentWorld);
@@ -2359,7 +2360,7 @@ GREENEYE_MOD_START {
     }
 
     if (serverSide) {
-        Log("Town Portals 1.0.10: server companion loaded");
+        Log("Town Portals 1.0.11: server companion loaded");
         return true;
     }
 
@@ -2422,7 +2423,7 @@ GREENEYE_MOD_START {
     portal::casting::Init(host);
     LogGraphicsAdapters();
 
-    Log("Town Portals 1.0.10: press T (OpenPortalKey in town-portal.ini) to open a portal to your Preferred Spawn Flame Altar");
+    Log("Town Portals 1.0.11: press T (OpenPortalKey in town-portal.ini) to open a portal to your Preferred Spawn Flame Altar");
     return true;
 }
 

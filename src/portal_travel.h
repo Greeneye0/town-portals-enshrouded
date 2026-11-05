@@ -16,6 +16,8 @@ void SetClient(void* gameClient);
 // True while this process runs the authoritative ECS world (singleplayer, host, or dedicated server).
 bool HostsWorld();
 bool HostAnswered();
+// Hosting: where the UI has this machine's player, to tell which player in the world is its own.
+void ObserveHostPosition(float wx, float wz);
 
 // Queue an immediate authoritative teleport for `entity` to `target` (with known 3D x, y, z).
 Submission SubmitTeleport(uint32_t entity, const FixedPos& target);
