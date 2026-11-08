@@ -80,7 +80,6 @@ it), in the game folder and on the server.
 SETTINGS: greeneye\town-portal\town-portal.ini (written on first start)
 [Portals] (the host's file: the dedicated server's, or the hosting player's)
   AllowInShroud=true, AllowInHollowHalls=true, DisableAutoClose=false
-  NoFun=false            true turns off the mod's jokes and surprises
 [Controls] (each player's own)
   OpenPortalKey=T        a letter, F1-F24, Mouse4, Mouse5, ... or a key code like 0x54
   InteractKey=Auto       the key that uses a portal: Auto follows the game's Interact key
