@@ -46,6 +46,12 @@ map_files = ("map.jpg", *lettered, "backdrop.jpg", "altar.png", "altar-base.png"
 (client / "map").mkdir()
 for file in map_files:
     shutil.copy2(root / "assets/map" / file, client / "map" / file)
+# The easter egg's pictures (tools/easter/make_easter.py).
+easter = sorted((root / "assets/easter").glob("*.jpg"))
+assert len(easter) == 5, f"expected 5 easter egg pictures in assets/easter, found {len(easter)}"
+(client / "easter").mkdir()
+for source in easter:
+    shutil.copy2(source, client / "easter" / source.name)
 shutil.copy2(root / "tools/release-readme.txt", destination / "README.txt")
 
 manifest = {

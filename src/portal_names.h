@@ -10,6 +10,8 @@ namespace portal::names {
 const char* Destination(uint8_t* uiClient, const PortalInstance& portal, bool fromField);
 // A player's display name; false when not in the client's player list.
 bool PlayerName(uint8_t* uiClient, uint32_t playerId, char* out, size_t cap);
+// The ids of the players in the world (the game's player list); how many were written.
+int PlayerIds(uint8_t* uiClient, uint32_t* out, int cap);
 // The region (portal_regions.h order) at a world point; -1 outside the map.
 int RegionAt(float x, float z);
 // A region's name (portal_regions.h order), or a place's by its loca id, in the game's language

@@ -25,6 +25,9 @@ void DrawHudFrame(uint8_t* uiClient,
 // Portal sounds: the summon sound over the 3 s channel (stopped if it is cancelled) and the
 // travel whoosh when the player steps through, at gain (the game's master times game volume).
 void PlayPortalSound(float gain);
+// The easter egg's TV static: true once when a nearby portal starts its flicker (portal_easter.h).
+bool TakeEggStaticCue();
+void PlayEggStatic(float gain);
 // The character's voice refusing a cast: one of three takes of line ("no_room", "shroud",
 // "hollow_halls") from greeneye\town-portal\voice\<voice>\<language>\<line>_<n>.wav, in
 // voice (f1..f5, m1..m5; f1 when unknown) and the game's language, else English. At gain

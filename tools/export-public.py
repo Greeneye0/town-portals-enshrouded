@@ -12,7 +12,7 @@ root = pathlib.Path(__file__).resolve().parents[1]
 out = root.parent / "TownPortals-public"
 KEEP = [
     "src", "tests", "build.bat", "build-dev.bat", "deploy.py", "mod.json",
-    "assets/voice", "assets/biomes", "assets/sounds/portal-summon.wav", "assets/sounds/portal-travel.wav",
+    "assets/voice", "assets/biomes", "assets/easter", "assets/sounds/portal-summon.wav", "assets/sounds/portal-travel.wav",
     "assets/animations/SOURCE.md",  # the sounds' Pixabay original is not redistributed
     "assets/animations/portal-cast-retargeted.json",
     "assets/map/map-source-en.png", "assets/map/map-source-blank.png", "assets/map/map.jpg",

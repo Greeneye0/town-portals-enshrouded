@@ -36,6 +36,11 @@ bool MissingSnapshot(uint64_t& portalId,PortalEndpoint& destination,uint64_t aft
 // The game frame's exposure (as a capture records it); 0 before the first frame. A snapshot
 // made outside a capture gets this one so it shows as if taken now.
 float FrameExposure();
+// The easter egg (portal_easter.h), gameplay thread: show this place's picture at both ends of the
+// portal while its gag plays. image: the decoded picture (portal_default_images.h), or null when
+// GagPlace() already is this place. GagPlace: the place whose picture is uploaded, or -1.
+void ShowGag(const PortalInstance& portal,int place,std::shared_ptr<sharing::Image> image);
+int GagPlace();
 // Gameplay-thread readiness of the player's current area. Capture needs fresh,
 // continuously ready samples; a timeout keeps the previous image intact.
 void SnapshotAreaReady(bool ready,uint64_t now);

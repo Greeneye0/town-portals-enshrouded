@@ -13,6 +13,7 @@
 #include <cwctype>
 #include "portal_bindings.h"
 #include "input_binds.h"
+#include "portal_colors.h"
 
 namespace portal::rules {
 
@@ -84,6 +85,11 @@ inline constexpr const char* kInteractKey =
     "; changed it in the game's controls), or a key as for OpenPortalKey. On a controller it\n"
     "; follows the game's Interact button too; add Pad:... after a comma to choose another.\n"
     "InteractKey=Auto\n";
+inline constexpr const char* kColourKey =
+    "; Your portal's colour: Auto (by when you joined, like your minimap icon) or one of yellow,\n"
+    "; blue, red, green, purple, orange, cyan, pink, white, lime, teal, magenta, brown, navy, olive,\n"
+    "; maroon. Everyone sees it (portals and the map mod), unless another player in the world has it.\n"
+    "PortalColor=Auto\n";
 inline constexpr const char* kQualityKey =
     "; Portal effects: Auto follows the game's graphics settings (lighter on Low and Medium),\n"
     "; Low always draws the lighter portals, High always the full ones.\n"
@@ -99,7 +105,7 @@ inline void WriteControlsDefaults() {
     if (value[0] != L'\x1') {
         // [Controls] is there; add the keys that came later.
         for (auto [key, text] : {std::pair{L"VoiceFeedback", kVoiceKey}, std::pair{L"PortalQuality", kQualityKey},
-                                 std::pair{L"InteractKey", kInteractKey}}) {
+                                 std::pair{L"InteractKey", kInteractKey}, std::pair{L"PortalColor", kColourKey}}) {
             GetPrivateProfileStringW(L"Controls", key, L"\x1", value, 32, path.c_str());
             if (value[0] == L'\x1')
                 if (FILE* f = _wfopen(path.c_str(), L"a")) {
@@ -113,6 +119,22 @@ inline void WriteControlsDefaults() {
         std::fputs(kControlsSection, f);
         std::fclose(f);
     }
+}
+
+// This player's preferred portal colour ([Controls] PortalColor): a palette slot, or -1 for Auto.
+// Read again at most once a second.
+inline int PreferredColour() {
+    static int slot = -1;
+    static uint64_t readAt = 0;
+    const uint64_t now = GetTickCount64();
+    if (readAt && now - readAt <= 1000) return slot;
+    readAt = now;
+    wchar_t value[32]{};
+    GetPrivateProfileStringW(L"Controls", L"PortalColor", L"Auto", value, 32, Path().c_str());
+    char name[32]{};
+    for (int i = 0; i < 31 && value[i]; ++i) name[i] = value[i] < 128 ? char(value[i]) : '?';
+    slot = colors::ParseName(name);
+    return slot;
 }
 
 // Whether this player hears their character's voice feedback ([Controls] VoiceFeedback, on
@@ -249,6 +271,59 @@ inline Rules ReadFile() {
         return fallback;
     };
     return {flag(L"AllowInShroud", true), flag(L"AllowInHollowHalls", true), flag(L"DisableAutoClose", false)};
+}
+
+// A [Portals] key added after the file was first written: its comment and default line (block)
+// go into [Portals], before the comments that lead into [Controls]. Nothing when it is there.
+inline void AddPortalsKey(const wchar_t* key, const char* block) {
+    const std::wstring path = Path();
+    wchar_t value[8]{};
+    GetPrivateProfileStringW(L"Portals", key, L"\x1", value, 8, path.c_str());
+    if (value[0] != L'\x1') return;
+    FILE* f = _wfopen(path.c_str(), L"rb");
+    if (!f) return;
+    std::string text;
+    char buf[4096];
+    for (size_t n; (n = std::fread(buf, 1, sizeof(buf), f)) > 0;) text.append(buf, n);
+    std::fclose(f);
+    const size_t at = text.find("[Controls]");
+    if (at != std::string::npos) {
+        size_t lineStart = text.rfind('\n', at ? at - 1 : 0);
+        lineStart = lineStart == std::string::npos ? 0 : lineStart + 1;
+        while (lineStart > 1) {
+            size_t prev = text.rfind('\n', lineStart - 2);
+            prev = prev == std::string::npos ? 0 : prev + 1;
+            if (text[prev] != ';' && text[prev] != '\r' && text[prev] != '\n') break;
+            lineStart = prev;
+        }
+        text.insert(lineStart, block);
+    } else {
+        if (!text.empty() && text.back() != '\n') text += '\n';
+        if (text.find("[Portals]") == std::string::npos) text += "[Portals]\n";
+        text += block;
+    }
+    if (FILE* out = _wfopen(path.c_str(), L"wb")) {
+        std::fwrite(text.data(), 1, text.size(), out);
+        std::fclose(out);
+    }
+}
+
+inline constexpr const char* kNoFunKey =
+    "; NoFun=true turns off this mod's jokes and surprises (on a host or server, for its whole\n"
+    "; world too). true or false.\n"
+    "NoFun=false\n";
+
+// [Portals] NoFun (off unless true), read again at most once a second.
+inline bool NoFun() {
+    static bool on = false;
+    static uint64_t readAt = 0;
+    const uint64_t now = GetTickCount64();
+    if (readAt && now - readAt <= 1000) return on;
+    readAt = now;
+    wchar_t value[16]{};
+    GetPrivateProfileStringW(L"Portals", L"NoFun", L"false", value, 16, Path().c_str());
+    on = !_wcsicmp(value, L"true") || !_wcsicmp(value, L"1") || !_wcsicmp(value, L"yes") || !_wcsicmp(value, L"on");
+    return on;
 }
 
 // This machine's file, read again at most once a second (the travel prompt asks every frame).

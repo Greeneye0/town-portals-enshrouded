@@ -5,6 +5,7 @@
 #include "greeneye.h"
 #include "portal_default_images.h"
 #include "portal_default_view.h"
+#include "portal_easter.h"
 #include <cmath>
 #include <condition_variable>
 #include <mutex>
@@ -35,11 +36,18 @@ uint16_t Half(float f) {
 std::shared_ptr<sharing::Image> Decode(int region,bool night) {
     wchar_t path[MAX_PATH]{};GetModuleFileNameW(nullptr,path,MAX_PATH);
     if(auto* slash=wcsrchr(path,L'\\'))slash[1]=0;
-    wchar_t name[64]{};std::swprintf(name,64,L"%s-%s.jpg",kRegionFiles[region],night?L"night":L"day");
-    wcscat_s(path,L"greeneye\\town-portal\\biomes\\");wcscat_s(path,name);
+    wchar_t name[64]{};
+    if(region>=kRegions){ // the easter egg's places (portal_easter.h)
+        std::swprintf(name,64,L"%s.jpg",easter::kFiles[region-kRegions]);
+        wcscat_s(path,L"greeneye\\town-portal\\easter\\");
+    }else{
+        std::swprintf(name,64,L"%s-%s.jpg",kRegionFiles[region],night?L"night":L"day");
+        wcscat_s(path,L"greeneye\\town-portal\\biomes\\");
+    }
+    wcscat_s(path,name);
     std::vector<uint8_t> rgba;uint32_t width{},height{};
     if(!LoadRgba(path,width,height,rgba,sharing::kWidth,sharing::kHeight)||width!=sharing::kWidth||height!=sharing::kHeight){
-        char line[160]{};std::snprintf(line,sizeof(line),"Town Portal: default picture %ls not loaded (missing or not an image)",name);
+        char line[160]{};std::snprintf(line,sizeof(line),"Town Portal: %s picture %ls not loaded (missing or not an image)",region>=kRegions?"easter egg":"default",name);
         Log(line);return nullptr;
     }
     uint16_t light[256];for(int v=0;v<256;++v)light[v]=Half(SceneLight(uint8_t(v)));
@@ -97,7 +105,7 @@ float SceneLight(uint8_t srgb) {
     return shown/(1.f-shown);
 }
 void Request(int region,bool night) {
-    if(region<0||region>=kRegions)return;
+    if(region<0||region>=kRegions+easter::kVariants)return;
     std::lock_guard lock(g_mutex);
     if(!g_worker){g_stop=false;g_worker=new std::thread(Work);}
     g_region=region;g_night=night;g_state=0;g_pending=true;g_image.reset();

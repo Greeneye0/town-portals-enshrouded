@@ -26,6 +26,11 @@ def main():
         # The default altar-portal pictures (tools/biome-shots/export_defaults.py).
         shutil.rmtree(os.path.join(DEST_DIR, "biomes"), ignore_errors=True)
         shutil.copytree(biomes, os.path.join(DEST_DIR, "biomes"))
+    # The easter egg's pictures (tools/easter/make_easter.py).
+    easter = os.path.join(HERE, "assets", "easter")
+    if os.path.isdir(easter):
+        shutil.rmtree(os.path.join(DEST_DIR, "easter"), ignore_errors=True)
+        shutil.copytree(easter, os.path.join(DEST_DIR, "easter"))
     # The loading-screen map (tools/map/make_map.py).
     os.makedirs(os.path.join(DEST_DIR, "map"), exist_ok=True)
     lettered = sorted(n for n in os.listdir(os.path.join(HERE, "assets", "map")) if n.startswith("map-") and n.endswith(".jpg"))

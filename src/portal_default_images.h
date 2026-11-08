@@ -14,6 +14,7 @@ constexpr int kRegions=8; // portal_regions.h order
 float SceneLight(uint8_t srgb);
 // Worker-thread loading: Request starts one picture (replacing any pending request); Take
 // hands it over once loaded: 1 (image set, meta empty), 0 still loading, -1 none.
+// Regions from kRegions on are the easter egg's places (kRegions + its place, portal_easter.h).
 void Request(int region,bool night);
 // Any image file Windows can decode, as 8-bit RGBA rows (straight alpha). Initialises COM on
 // the calling thread when needed. False when missing or unreadable.

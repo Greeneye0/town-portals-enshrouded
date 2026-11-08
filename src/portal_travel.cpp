@@ -7,6 +7,7 @@
 #include "portal_names.h"
 #include "portal_snapshot_share.h"
 #include "portal_host_identity.h"
+#include "portal_easter.h"
 #include <atomic>
 #include <cmath>
 #include <cstdio>
@@ -753,7 +754,18 @@ bool ApplyTick(void* ctx, void* descriptors) {
                 p.groundY = y;
                 return false; // confirm the ground on the next tick
             }
-            p.target.y = y;
+            // Up to the ground found, but never more than 25 cm below the height the traveller's
+            // game sent: under water this ray found a surface 1 m under the floor and put the
+            // player inside the ground beside their altar (2026-11-08).
+            constexpr int64_t kMaxSink = static_cast<int64_t>(0.25 * kFixedScale);
+            if (y < p.target.y - kMaxSink) {
+                char line[160]{};
+                std::snprintf(line, sizeof(line), "Town Portal: ground found at %.1f, below the destination's %.1f; keeping the destination's",
+                              static_cast<double>(y) * kInvFixedScale, static_cast<double>(p.target.y) * kInvFixedScale);
+                Log(line);
+            } else {
+                p.target.y = y;
+            }
         } else if (terrain == DestinationTerrain::loading) {
             Log("Town Portal: destination terrain still loading; using the portal's height");
         }
@@ -968,6 +980,21 @@ int HandleProtocolChat(void* store, uint8_t type, uint64_t* text, uint32_t sende
             return 2;
         }
         return 0; // the host relays it to the owner
+    }
+
+    // A player's preferred portal colour: "/tpk1 ..."; the host relays it.
+    uint32_t colourPlayer = 0;
+    int colourSlot = -1;
+    if (ParseColour(line, colourPlayer, colourSlot)) {
+        if (isClientStore) colors::SetPreference(colourPlayer, colourSlot);
+        return isClientStore ? 2 : 0;
+    }
+
+    // The easter egg: "/tpx1 ...", played by everyone who sees the portal; the host relays it.
+    EasterEggMsg eggMsg{};
+    if (ParseEasterEgg(line, eggMsg)) {
+        if (isClientStore && !rules::NoFun()) easter::Start(eggMsg.portalId, int(eggMsg.place), GetTickCount64());
+        return isClientStore ? 2 : 0;
     }
 
     // Portal Close broadcast: "/tpc1 ..."

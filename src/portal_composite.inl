@@ -30,6 +30,13 @@ struct Snapshot {
 // snapshot is taken from, so these get a similar grade when shown (not kept across reloads).
 bool g_snapshotShroud[kSnapshots]{};
 const Snapshot* SharedSnapshot(const PortalInstance& p,bool destinationBase,bool& shroud);
+const Snapshot* GagSnapshot(const PortalInstance& p,bool field,uint64_t now); // the easter egg's picture
+// The easter egg's static on this portal's lens now (0 none).
+inline float EasterSnow(uint64_t portalId,uint64_t now) {
+    int place=0;uint64_t t=0;
+    if(!easter::Playing(portalId,now,place,t)||t<easter::kFlickerAtMs)return 0.f;
+    return easter::StaticAmount(t-easter::kFlickerAtMs);
+}
 // An altar-side portal drawn with no snapshot of its field end (MissingSnapshot).
 struct MissingView {uint64_t portalId{},tick{};PortalEndpoint destination{};};
 MissingView g_missing{};
@@ -259,7 +266,7 @@ uint8_t* CompositeCommand(void* pass,uint8_t opcode,uint16_t size) {
 // snapshot shown in it.
 bool CompositeCoordinates(void* state,const PortalEndpoint& end,bool live,float form,uint32_t tint,bool inFrame,
                           const Snapshot* snapshot,const PortalEndpoint& destination,float exposureScale,
-                          const CastEffectState* cast,float* vertices) {
+                          const CastEffectState* cast,float* vertices,float snow=0.f) {
     math::PortalScreenPlane plane{};
     // The game's projection carries its temporal anti-aliasing jitter in [8] and [9] (a new
     // sub-pixel offset every frame, measured live). Drawn into the game's frame the portal
@@ -293,7 +300,7 @@ bool CompositeCoordinates(void* state,const PortalEndpoint& end,bool live,float 
         else{v[28]=jitter[0];v[29]=jitter[1];v[30]=0;v[31]=0;}
         if(snapshot){
             SnapshotRows(*snapshot,destination,v+32);
-            v[44]=kWindowStart;v[45]=exposureScale;v[46]=1;
+            v[44]=kWindowStart;v[45]=exposureScale;v[46]=1+std::clamp(snow,0.f,1.f); // 1: bound; above it the easter egg's static
             v[47]=SnapshotIsShroud(snapshot)?1.f:0.f;
         }
         // The caster's hand in this portal's space (metres: right, up, normal from its centre).
@@ -356,7 +363,8 @@ void CompositeRecord(void* pass,void* state,const ImageView& depth,bool inFrame,
         const auto& slot=slots[i];
         const PortalEndpoint destination=slot.field?slot.portal.baseEnd:slot.portal.fieldEnd.Turned();
         if(inFrame&&invExposure>0){
-            bool shroud=false;snapshot[i]=SharedSnapshot(slot.portal,slot.field,shroud);
+            bool shroud=false;snapshot[i]=GagSnapshot(slot.portal,slot.field,now);
+            if(!snapshot[i])snapshot[i]=SharedSnapshot(slot.portal,slot.field,shroud);
             if(!snapshot[i]){int local=FindSnapshot(destination);if(local>=0){snapshot[i]=&c.snapshots[local];g_snapshotShown[local]=now;}}
             // Either side: the way home too has a default picture until a capture of the altar
             // matches (none yet, or the base end moved since the saved one was taken).
@@ -371,7 +379,7 @@ void CompositeRecord(void* pass,void* state,const ImageView& depth,bool inFrame,
         const bool casting=inFrame&&slot.field&&g_cast.effect>0&&g_cast.portalId==p.portalId&&!p.closing;
         drawn[i]=CompositeCoordinates(state,slot.field?p.fieldEnd:p.baseEnd,live,form,slot.tint,inFrame,
                                       shown,destination,shown?std::clamp(std::sqrt(shown->exposure*invExposure),1.f,4.f):0.f,
-                                      casting?&g_cast:nullptr,vertices[i]);
+                                      casting?&g_cast:nullptr,vertices[i],EasterSnow(p.portalId,now));
     }
     Native<void(*)(void*,uint64_t)>(0x47a70)(pass,0x7ffffffff);
     auto* graph=At<uint8_t*>(pass,0);

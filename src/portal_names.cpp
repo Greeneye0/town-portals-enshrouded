@@ -66,6 +66,18 @@ bool ReadPlayerName(uint8_t* uiClient, uint32_t playerId, char* out, size_t cap)
     return false;
 }
 
+int ReadPlayerIds(uint8_t* uiClient, uint32_t* out, int cap) {
+    int n = 0;
+    __try {
+        auto* players = *reinterpret_cast<uint8_t**>(uiClient + 0x4642c0);
+        uint64_t count = *reinterpret_cast<uint64_t*>(uiClient + 0x4642c8);
+        if (!players || count > 64) return 0;
+        for (uint64_t i = 0; i < count && n < cap; ++i)
+            if (const uint32_t id = *reinterpret_cast<uint32_t*>(players + i * 0x240)) out[n++] = id;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
+    return n;
+}
+
 // The region at a world point (defined below, outside this unnamed namespace).
 int RegionAtImpl(float x, float z) {
     int cx = int(x / float(kRegionCellMeters)), cz = int(z / float(kRegionCellMeters));
@@ -175,6 +187,10 @@ const char* Destination(uint8_t* uiClient, const PortalInstance& p, bool fromFie
 
 bool PlayerName(uint8_t* uiClient, uint32_t playerId, char* out, size_t cap) {
     return uiClient && ReadPlayerName(uiClient, playerId, out, cap);
+}
+
+int PlayerIds(uint8_t* uiClient, uint32_t* out, int cap) {
+    return uiClient && out && cap > 0 ? ReadPlayerIds(uiClient, out, cap) : 0;
 }
 
 

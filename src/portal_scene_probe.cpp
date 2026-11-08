@@ -8,6 +8,8 @@
 #include "portal_snapshot_native.h"
 #include "portal_snapshot_timing.h"
 #include "portal_snapshot_hide.h"
+#include "portal_default_view.h"
+#include "portal_easter.h"
 #include <array>
 #include <atomic>
 #include <mutex>
@@ -750,6 +752,7 @@ void SceneTickHook(void* scene,const void* description) {
             std::lock_guard lock(g_lock);
             CompositeRefreshGuard();
             SharedGpuTickGuard();
+            GagGpuTickGuard();
         }
         if(auto action=g_targetRequest.exchange(0)) {
             std::lock_guard lock(g_lock);
@@ -1202,6 +1205,8 @@ bool InFrameDraw(void* scope,uint8_t* state,uint8_t* inputs,bool lightOnly=false
     if(g_sharedGpu)for(const auto& v:g_sharedGpu->views)
         if(v.snapshot.valid&&v.epoch==sharing::Epoch())
             Native<void(*)(void*,const void*,uint8_t,const uint64_t*)>(0x4cf00)(scope,&v.snapshot.image,7,&access);
+    if(g_gagGpu&&g_gagGpu->ticket&&!g_gagGpu->error&&g_gagGpu->place>=0)
+        Native<void(*)(void*,const void*,uint8_t,const uint64_t*)>(0x4cf00)(scope,&g_gagGpu->image,7,&access);
     // Load and store: blend over what the scene drew.
     const uint8_t attachment[]={1,1,0};
     Native<void(*)(void*,const void*,const void*,const char*)>(0x6c340)(scope,&color,attachment,"town portal");
@@ -1355,6 +1360,8 @@ bool Init(const GreeneyeHost* host) {
     if(!g_composite)return false;
     g_sharedGpu=static_cast<SharedGpuState*>(host->keep("portal-shared-snapshot-gpu-v1",sizeof(SharedGpuState)));
     if(!g_sharedGpu)return false;
+    g_gagGpu=static_cast<GagGpuState*>(host->keep("portal-easter-gpu-v1",sizeof(GagGpuState)));
+    if(!g_gagGpu)return false;
     g_snapshotCaptureHash=static_cast<uint32_t*>(host->keep("portal-snapshot-capture-hash-v1",sizeof(uint32_t)));
     if(!g_snapshotCaptureHash)return false;
     g_snapshotScratch=static_cast<SnapshotScratch*>(host->keep("portal-snapshot-scratch-v1",sizeof(SnapshotScratch)));
@@ -1657,6 +1664,8 @@ int UploadSnapshot(std::shared_ptr<sharing::Image> image,const char* what) {
     return CachedHomeStep(std::move(image),what);
 }
 float FrameExposure() {return g_frameExposure.load();}
+void ShowGag(const PortalInstance& portal,int place,std::shared_ptr<sharing::Image> image) {ShowGagImpl(portal,place,std::move(image));}
+int GagPlace() {return GagPlaceImpl();}
 bool MissingSnapshot(uint64_t& portalId,PortalEndpoint& destination,uint64_t after) {
     std::lock_guard lock(g_lock);
     if(!g_missing.portalId||g_missing.tick<=after||GetTickCount64()-g_missing.tick>500)return false;

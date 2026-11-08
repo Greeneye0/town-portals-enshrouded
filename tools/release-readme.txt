@@ -1,4 +1,4 @@
-Town Portals 1.0.12 for Enshrouded
+Town Portals 1.0.13 for Enshrouded
 Saving your ass since 2026.
 
 Open a portal home from anywhere. Press T: after a short cast, a portal opens in front
@@ -72,7 +72,7 @@ Dedicated server (server admin only)
    On a rented server, upload the same files next to enshrouded_server.exe with the
    host's file manager (if it lets you add DLL files).
 
-Check: greeneye\loader.log has a line with "Town Portals 1.0.12" (the server's says
+Check: greeneye\loader.log has a line with "Town Portals 1.0.13" (the server's says
 "server companion loaded").
 Uninstall: delete greeneye\town-portal (and dbgcore.dll if no other Greeneye mod uses
 it), in the game folder and on the server.
@@ -80,11 +80,13 @@ it), in the game folder and on the server.
 SETTINGS: greeneye\town-portal\town-portal.ini (written on first start)
 [Portals] (the host's file: the dedicated server's, or the hosting player's)
   AllowInShroud=true, AllowInHollowHalls=true, DisableAutoClose=false
+  NoFun=false            true turns off the mod's jokes and surprises
 [Controls] (each player's own)
   OpenPortalKey=T        a letter, F1-F24, Mouse4, Mouse5, ... or a key code like 0x54
   InteractKey=Auto       the key that uses a portal: Auto follows the game's Interact key
   VoiceFeedback=true
   PortalQuality=Auto     Auto, Low or High
+  PortalColor=Auto       Auto, or a colour: yellow, blue, red, green, purple, orange, cyan, pink, white, lime, teal, magenta, brown, navy, olive or maroon
 Picture sharing: delete greeneye\town-portal\share-snapshots.enabled to turn it off.
 
 KNOWN LIMITATIONS

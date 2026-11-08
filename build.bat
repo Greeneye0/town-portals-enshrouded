@@ -24,7 +24,7 @@ if not exist build mkdir build
 
 echo Compiling town-portal.dll...
 cl /nologo /std:c++20 /utf-8 /O2 /Zi /EHsc /MT /LD /W4 %PORTAL_DEFINES% /I "%GREENEYE_COMMON%" ^
-    src\main.cpp src\portal_natives.cpp src\portal_travel.cpp src\portal_render.cpp src\portal_scene_probe.cpp src\portal_cast.cpp src\portal_names.cpp src\portal_markers.cpp src\portal_snapshot_codec.cpp src\portal_snapshot_share.cpp src\portal_snapshot_cache.cpp src\portal_default_images.cpp ^
+    src\main.cpp src\portal_natives.cpp src\portal_travel.cpp src\portal_water.cpp src\portal_render.cpp src\portal_scene_probe.cpp src\portal_cast.cpp src\portal_names.cpp src\portal_markers.cpp src\portal_snapshot_codec.cpp src\portal_snapshot_share.cpp src\portal_snapshot_cache.cpp src\portal_default_images.cpp ^
     /Fo:build\ ^
     /Fe:"%PORTAL_OUTPUT%\town-portal.dll" ^
     /Fd:build\ ^
@@ -90,6 +90,10 @@ if errorlevel 1 exit /b 1
 bin\test_map_warp.exe
 if errorlevel 1 exit /b 1
 cl /nologo /std:c++20 /O2 /EHsc /MT /W4 tests\test_quality.cpp /Fo:build\ /Fe:bin\test_quality.exe
+if errorlevel 1 exit /b 1
+cl /nologo /std:c++20 /utf-8 /O2 /EHsc /MT /W4 tests\test_easter.cpp /Fo:build\ /Fe:bin\test_easter.exe
+if errorlevel 1 exit /b 1
+bin\test_easter.exe
 if errorlevel 1 exit /b 1
 cl /nologo /std:c++20 /O2 /EHsc /MT /W4 tests\test_bindings.cpp /Fo:build\ /Fe:bin\test_bindings.exe
 if errorlevel 1 exit /b 1

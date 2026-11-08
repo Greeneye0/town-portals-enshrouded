@@ -18,6 +18,7 @@
 #include "portal_map_warp.h"
 #include "portal_map_labels.h"
 #include "portal_default_images.h"
+#include "portal_easter.h"
 #include <array>
 #include <limits>
 #include <algorithm>
@@ -1411,10 +1412,78 @@ void DrawPortalLabels(const CameraFrame& cam, const std::vector<PortalInstance>&
         float top3=std::max({rgb[0],rgb[1],rgb[2],0.01f});
         uint32_t bright=0xff000000u;
         for (int k=0;k<3;++k) bright|=uint32_t(std::min(1.0f,rgb[k]/top3*0.85f+0.15f)*255)<<(8*k);
-        const char* destination=names::Destination(g_uiClient,p,end.field);
+        const char* destination=easter::LabelFor(p.portalId,now,Language(),names::Destination(g_uiClient,p,end.field));
         if (named) DrawLabel(end.sx-200,end.sy-28,400,30,owner,bright,alpha,2,style);
         DrawLabel(end.sx-260,end.sy,520,28,destination,0xffe4ded4u,0.9f*alpha,2,style);
     }
+}
+
+
+// The easter egg (portal_easter.h): the portal draws the other game's picture and the static on
+// its lens (portal_composite.inl); here only the hiss, once, when a portal within 30 m starts its
+// flicker in view.
+std::atomic<bool> g_eggStaticCue{false};
+uint64_t g_eggCuedPortal = 0;
+
+void DrawPortalGags(void*, const CameraFrame& cam, const std::vector<PortalInstance>& portals, uint64_t now) {
+    const Vec3 camera{cam.camX, cam.camY, cam.camZ};
+    for (const auto& p : portals) {
+        int variant = 0;
+        uint64_t t = 0;
+        if (p.closing || p.portalId == g_eggCuedPortal || !easter::Playing(p.portalId, now, variant, t) ||
+            t < easter::kFlickerAtMs)
+            continue;
+        for (bool field : {true, false}) {
+            const auto& e = field ? p.fieldEnd : p.baseEnd;
+            const Vec3 c{e.wx, e.wy + 1.62f, e.wz};
+            float sx{}, sy{}, depth{};
+            if (math::LengthSq(c - camera) > 30.0f * 30.0f || !cam.Project(c.x, c.y, c.z, sx, sy, depth)) continue;
+            g_eggCuedPortal = p.portalId;
+            g_eggStaticCue = true;
+            break;
+        }
+    }
+}
+
+// The flicker's sound (made here, 0.6 s), very quiet: a full-range TV hiss that wavers, a little
+// louder at the picture's two blips, which snaps off as the picture folds away.
+const std::vector<uint8_t>& EggStaticWav() {
+    static std::vector<uint8_t> wav;
+    if (!wav.empty()) return wav;
+    constexpr uint32_t rate = 44100, samples = rate * 6 / 10;
+    wav.resize(44 + samples * 2);
+    auto put32 = [&](size_t at, uint32_t v) { std::memcpy(&wav[at], &v, 4); };
+    auto put16 = [&](size_t at, uint16_t v) { std::memcpy(&wav[at], &v, 2); };
+    std::memcpy(&wav[0], "RIFF", 4);
+    put32(4, 36 + samples * 2);
+    std::memcpy(&wav[8], "WAVEfmt ", 8);
+    put32(16, 16);
+    put16(20, 1);
+    put16(22, 1);
+    put32(24, rate);
+    put32(28, rate * 2);
+    put16(32, 2);
+    put16(34, 16);
+    std::memcpy(&wav[36], "data", 4);
+    put32(40, samples * 2);
+    constexpr float kCut = 0.55f;                                    // the picture starts folding
+    uint32_t seed = 0x9e3779b9u;
+    float level = 0.8f, target = 0.8f, previous = 0;
+    for (uint32_t i = 0; i < samples; ++i) {
+        const float s = float(i) / rate;
+        // Hiss: white noise with a slight high lift, its level wandering every 25 ms.
+        seed = seed * 1664525u + 1013904223u;
+        const float white = float(int32_t(seed) >> 16) / 32768.0f;
+        const float hiss = white - 0.3f * previous;
+        previous = white;
+        if (i % (rate / 40) == 0) target = 0.55f + 0.45f * float((seed >> 8) & 255) / 255.0f;
+        level += (target - level) * 0.002f;
+        const float blip = (s >= 0.15f && s < 0.21f) || (s >= 0.33f && s < 0.38f) ? 1.25f : 1.0f;
+        const float noiseEnv = std::min(1.0f, s / 0.01f) * std::clamp((kCut + 0.04f - s) / 0.04f, 0.0f, 1.0f);
+        const float out = hiss * level * blip * noiseEnv * 0.032f; // barely there: well under the game's own sounds
+        put16(44 + size_t(i) * 2, uint16_t(int16_t(std::clamp(out, -1.0f, 1.0f) * 32767.0f)));
+    }
+    return wav;
 }
 
 void DrawFrameBody(Widget& widget, const CameraFrame& cam, const std::vector<PortalInstance>& portals,
@@ -1472,7 +1541,10 @@ void DrawFrameBody(Widget& widget, const CameraFrame& cam, const std::vector<Por
   }
 
     const float sw=cam.viewport[2],sh=cam.viewport[3],ox=cam.viewport[0],oy=cam.viewport[1];
-    if (LoadingAlpha(now)<=0.0f) DrawPortalLabels(cam,portals,now);
+    if (LoadingAlpha(now)<=0.0f) {
+        DrawPortalGags(widget.raw,cam,portals,now);
+        DrawPortalLabels(cam,portals,now);
+    }
     if (float blink=BlinkAlpha(now); blink>0.0f) DrawSolidRect(widget.raw,ox,oy,sw,sh,g_blinkColour.load(),blink);
     // Arrival: a dark screen with the portal swirl until the destination has loaded. Stepping
     // in, the swirl rushes in from filling the screen; arriving, it bursts outward with a
@@ -1657,6 +1729,8 @@ bool Init(const GreeneyeHost* host, void** uiRoot) {
 }
 
 void PlayScaled(const uint8_t* wav, size_t size, float gain);
+bool TakeEggStaticCue() { return g_eggStaticCue.exchange(false); }
+void PlayEggStatic(float gain) { const auto& wav = EggStaticWav(); PlayScaled(wav.data(), wav.size(), gain); }
 void PlayPortalSound(float gain) { PlayScaled(portal::sounds::kTravelWav, sizeof(portal::sounds::kTravelWav), gain); }
 
 // Plays a 16-bit WAV from a copy scaled to the game's volume (Windows plays it outside the

@@ -22,6 +22,8 @@
 #include "portal_markers.h"
 #include "portal_prompt_view.h"
 #include "portal_travel.h"
+#include "portal_water.h"
+#include "portal_easter.h"
 #include "portal_types.h"
 #include "portal_scene_probe.h"
 #include "portal_snapshot_share.h"
@@ -1271,7 +1273,7 @@ void RefuseCast(void* gameClient, const char* line, const char* notice, uint64_t
     static constexpr struct { int count; const char* line; portal::text::Id text; } kJokes[] = {
         {5, "nag_5", portal::text::Nag5}, {10, "nag_10", portal::text::Nag10}, {15, "nag_15", portal::text::Nag15}};
     for (const auto& joke : kJokes) {
-        if (g_refusals.count != joke.count) continue;
+        if (g_refusals.count != joke.count || portal::rules::NoFun()) continue;
         line = joke.line;
         notice = portal::text::Get(portal::render::Language(), joke.text);
         durationMs = 5000;
@@ -1512,6 +1514,8 @@ struct DefaultPicture {
     char what[64]{};
 } g_defaultPicture;
 
+bool GagPictureLoading(); // the easter egg's picture is using the worker (CheckGagPicture)
+
 void CheckDefaultPicture(uint8_t* uiClient, uint64_t now) {
     auto& d = g_defaultPicture;
     auto retry = [&](uint64_t ms) { d.stage = 0; d.retryAt = now + ms; };
@@ -1538,6 +1542,8 @@ void CheckDefaultPicture(uint8_t* uiClient, uint64_t now) {
         if (shown != 1) retry(10000); else { d.stage = 0; d.shownAt = now; }
         return;
     }
+    // An easter egg picture loading has the worker for now.
+    if (GagPictureLoading()) return;
     // The saved home snapshot uses the same upload at login.
     if (now < d.retryAt || (g_login.fromCache && !g_login.done)) return;
     uint64_t portalId = 0;
@@ -1557,6 +1563,77 @@ void CheckDefaultPicture(uint8_t* uiClient, uint64_t now) {
         "Nomad Highlands", "Kindlewastes", "Albaneve Summits", "Veilwater Basin", "Cinder's Cradle"};
     std::snprintf(d.what, sizeof(d.what), "default %s %s picture", kNames[region], d.night ? "night" : "day");
     portal::defaults::Request(region, d.night);
+}
+
+// Preferred portal colours (portal_colors.h): this player's choice is told to everyone every
+// 15 s and as soon as it changes; everyone's colours are decided twice a second from the players
+// in the world.
+void UpdateColours(uint8_t* uiClient, void* gameClient, uint64_t now) {
+    static uint64_t decideAt = 0, tellAt = 0;
+    static int told = -2;
+    static uint32_t toldId = 0;
+    if (now < decideAt) return;
+    decideAt = now + 500;
+    const uint32_t local = *reinterpret_cast<uint32_t*>(uiClient + 0x18);
+    const int mine = portal::rules::PreferredColour();
+    if (local) portal::colors::SetPreference(local, mine);
+    uint32_t ids[64]{};
+    const int count = portal::names::PlayerIds(uiClient, ids, 64);
+    if (count > 0) portal::colors::Resolve(ids, size_t(count));
+    if (!local || !gameClient || (now < tellAt && mine == told && local == toldId)) return;
+    char line[48]{};
+    const int n = portal::FormatColour(line, sizeof(line), local, mine);
+    if (n > 0) SendHiddenLine(gameClient, {line, static_cast<size_t>(n)});
+    told = mine;
+    toldId = local;
+    tellAt = now + 15000;
+}
+
+// The easter egg (portal_easter.h): when a portal's gag starts, its place's picture is decoded by
+// the default picture worker (or is the one already on the GPU) and shown at both its ends.
+struct GagPicture {
+    uint64_t portalId = 0;
+    int place = -1;
+    bool loading = false;
+    uint64_t since = 0;
+} g_gagPicture;
+bool GagPictureLoading() { return g_gagPicture.loading; }
+
+void CheckGagPicture(uint64_t now) {
+    auto& g = g_gagPicture;
+    if (g.loading) {
+        std::shared_ptr<portal::sharing::Image> image;
+        const int got = portal::defaults::Take(portal::defaults::kRegions + g.place, false, image);
+        if (got == 0 && now - g.since < 3000) return;
+        // The worker takes one request at a time: a default picture asked for in the same moment
+        // replaced this one (a Rivendell gag showed Springlands, 2026-11-08). Ask again.
+        if (got == -1 && now - g.since < 3000) {
+            portal::defaults::Request(portal::defaults::kRegions + g.place, false);
+            return;
+        }
+        g.loading = false;
+        if (got != 1 || !image) return;
+        std::vector<portal::PortalInstance> portals;
+        portal::travel::GetActivePortals(portals);
+        for (const auto& p : portals)
+            if (p.portalId == g.portalId) portal::sceneprobe::ShowGag(p, g.place, std::move(image));
+        return;
+    }
+    std::vector<portal::PortalInstance> portals;
+    portal::travel::GetActivePortals(portals);
+    for (const auto& p : portals) {
+        int place = 0;
+        uint64_t t = 0;
+        if (p.closing || p.portalId == g.portalId || !portal::easter::Playing(p.portalId, now, place, t)) continue;
+        g = {p.portalId, place, false, now};
+        if (portal::sceneprobe::GagPlace() == place) {
+            portal::sceneprobe::ShowGag(p, place, nullptr);
+        } else {
+            g.loading = true;
+            portal::defaults::Request(portal::defaults::kRegions + place, false);
+        }
+        return;
+    }
 }
 
 // The loading screen's percentage: an estimate from the trip's stages, each eased toward its
@@ -1720,6 +1797,29 @@ void TryOpenPortalAtPlayer(void* gameClient, uint8_t* uiClient,
     portal::casting::LockMovement(g_channel.until);
     portal::render::StartChannelSound(GameSoundGain());
     BroadcastPortalOpen(gameClient, inst);
+    // One portal in 50 seems to open into another game for a moment (portal_easter.h).
+    bool alwaysEgg = false;
+#ifdef TOWN_PORTAL_DEV
+    alwaysEgg = GetFileAttributesW((portal::rules::Path().substr(0, portal::rules::Path().size() - 15) + L"easter-test.enabled").c_str()) !=
+                INVALID_FILE_ATTRIBUTES;
+#endif
+    // Only places whose picture is installed here; none with NoFun.
+    uint32_t available = 0;
+    if (!portal::rules::NoFun()) {
+        const std::wstring folder = portal::rules::Path().substr(0, portal::rules::Path().size() - 15) + L"easter\\";
+        for (int v = 0; v < portal::easter::kVariants; ++v)
+            if (GetFileAttributesW((folder + portal::easter::kFiles[v] + L".jpg").c_str()) != INVALID_FILE_ATTRIBUTES)
+                available |= 1u << v;
+    }
+    if (const int place = portal::easter::Roll(inst.portalId, now, alwaysEgg, available); place >= 0) {
+        portal::easter::Start(inst.portalId, place, now);
+        char egg[96]{};
+        const int len = portal::FormatEasterEgg(egg, sizeof(egg), {inst.portalId, localAccount, uint32_t(place)});
+        if (len > 0) SendHiddenLine(gameClient, {egg, static_cast<size_t>(len)});
+        char line[96]{};
+        std::snprintf(line, sizeof(line), "Town Portal: this portal opened into another game (%ls)", portal::easter::kFiles[place]);
+        Log(line);
+    }
 
     char logBuf[192]{};
     std::snprintf(logBuf, sizeof(logBuf),
@@ -1872,6 +1972,8 @@ void RunGameplayTick(void* app, std::vector<portal::PortalInstance>& outPortals,
     if (!g_departure.gate.Active() && !g_arrival.since)
         CheckLoginSnapshot(gameClient, uiClient, px, py, pz, uiClient[0x1cd8] == 1 && (g_seenPlayFrame + 2 >= g_frame));
     CheckDefaultPicture(uiClient, GetTickCount64());
+    CheckGagPicture(GetTickCount64());
+    UpdateColours(uiClient, gameClient, GetTickCount64());
 
     bool inPlayHud = uiClient[0x1cd8] == 1 && (g_seenPlayFrame + 2 >= g_frame);
     // Two minutes of play on an untested build: it didn't crash on anything that runs early.
@@ -1886,6 +1988,8 @@ void RunGameplayTick(void* app, std::vector<portal::PortalInstance>& outPortals,
 #ifdef TOWN_PORTAL_DEV
     focused = focused || GetTickCount64() < g_devCastKeyUntil + 250 || greeneye::input::GameHasFocus(); // simulated keys need no focus
 #endif
+    // A nearby portal's easter egg flickers: its TV static.
+    if (portal::render::TakeEggStaticCue()) portal::render::PlayEggStatic(GameSoundGain());
     bool textActive = IsTextInputActive();
     bool travelling = g_departure.gate.Active() || g_arrival.since || portal::sceneprobe::SnapshotBusy();
     // Dead: no prompt, no travel, no cast. E is the game's Respawn on the death screen, so it must
@@ -2096,10 +2200,21 @@ void RunGameplayTick(void* app, std::vector<portal::PortalInstance>& outPortals,
 
     if (keyTriggered && PortalsAvailable()) {
         if (nearestIsFieldSide) {
-            // Travel: Field Portal -> Base Portal (emerge 1.9m in front of Base Portal, facing the Flame Altar)
-            float destX = nearestPortal->baseEnd.wx + nearestPortal->baseEnd.nx * 1.90f;
-            float destY = nearestPortal->baseEnd.wy;
-            float destZ = nearestPortal->baseEnd.wz + nearestPortal->baseEnd.nz * 1.90f;
+            // Travel: Field Portal -> Base Portal (emerge in front of Base Portal, facing the Flame Altar):
+            // 1.9 m out, but never within 1.9 m of the altar's centre. A base end 3.2 m from the altar
+            // put the player 1.3 m from it, stuck inside the altar (2026-11-08).
+            const auto& baseEnd = nearestPortal->baseEnd;
+            float emerge = 1.90f;
+            if (nearestPortal->altarX != 0.0f || nearestPortal->altarZ != 0.0f) {
+                const float ax = nearestPortal->altarX - baseEnd.wx, az = nearestPortal->altarZ - baseEnd.wz;
+                const float along = ax * baseEnd.nx + az * baseEnd.nz, across = std::fabs(ax * baseEnd.rx + az * baseEnd.rz);
+                constexpr float kAltarClearance = 1.9f;
+                if (along > 0.0f && across < kAltarClearance)
+                    emerge = std::clamp(along - std::sqrt(kAltarClearance * kAltarClearance - across * across), 0.6f, 1.90f);
+            }
+            float destX = baseEnd.wx + baseEnd.nx * emerge;
+            float destY = baseEnd.wy;
+            float destZ = baseEnd.wz + baseEnd.nz * emerge;
             portal::travel::RefineLocalGroundY(destX, destY, destZ);
             QueuePortalTravel(*nearestPortal, true, portal::ToFixed(destX, destY, destZ), tint, destination, px, pz, PlayerInShroud(uiClient));
         } else {
@@ -2193,6 +2308,7 @@ bool HotPrepare() {
     // Never retire a generation while its temporary snapshot view or queued
     // departure is in use. The caller can retry after travel has completed.
     if (g_departure.gate.Active() || g_arrival.since || portal::sceneprobe::SnapshotBusy()) return false;
+    if (!portal::water::Prepare()) return false; // this generation's spouts switch off first
     g_paused = true;
     RemoveKeyHook();
     portal::sharing::Stop();
@@ -2213,6 +2329,7 @@ void HotResume() {
     g_paused = false;
     g_tWasDown = true;
     g_eWasDown = true;
+    portal::water::Resume();
     portal::travel::Resume();
 }
 
@@ -2408,8 +2525,11 @@ GREENEYE_MOD_START {
         return false;
     }
 
+    portal::water::Init(host);
+    portal::rules::AddPortalsKey(L"NoFun", portal::rules::kNoFunKey);
+
     if (serverSide) {
-        Log("Town Portals 1.0.12: server companion loaded");
+        Log("Town Portals 1.0.13: server companion loaded");
         return true;
     }
 
@@ -2475,7 +2595,7 @@ GREENEYE_MOD_START {
     portal::casting::Init(host);
     LogGraphicsAdapters();
 
-    Log("Town Portals 1.0.12: press T or LB+Y on a controller (OpenPortalKey in town-portal.ini) to open a portal to your Preferred Spawn Flame Altar");
+    Log("Town Portals 1.0.13: press T or LB+Y on a controller (OpenPortalKey in town-portal.ini) to open a portal to your Preferred Spawn Flame Altar");
     return true;
 }
 

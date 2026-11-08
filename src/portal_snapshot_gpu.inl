@@ -270,6 +270,74 @@ void SharedGpuRecordGuard(void* scope){
     __try {SharedGpuRecord(scope);}
     __except(EXCEPTION_EXECUTE_HANDLER){if(g_sharedGpu)g_sharedGpu->error=0x80000002;}
 }
+
+// The easter egg's picture (portal_easter.h): an image of its own, made like a shared view and
+// kept across reloads, so a gag never takes the place of a portal's real picture. Both ends of
+// the gag's portal show it, each with the camera a default picture would have there
+// (portal_default_view.h), so it has the same window depth as one.
+struct GagGpuState {
+    void* root{};ImageView image{};uint32_t ticket{};int place=-1;uint32_t error{};
+};
+GagGpuState* g_gagGpu{};
+struct GagShown {uint64_t portalId{};int place=-1;Snapshot ends[2]{};}; // [0] shown at the field end
+GagShown g_gagShown;                                                    // under g_lock
+std::shared_ptr<sharing::Image> g_gagUpload;int g_gagUploadPlace=-1;   // under g_lock
+void GagGpuTick() {
+    if(!g_gagGpu||!g_gagUpload||!g_world||!g_composite||!g_composite->enabled)return;
+    auto* root=reinterpret_cast<uint8_t*>(g_world->root);
+    if(!root||!ShareNativeMatches())return;
+    auto& gag=*g_gagGpu;
+    if(gag.root!=root){gag=GagGpuState{};gag.root=root;} // a new native context: the old image went with the old one
+    if(gag.error)return;
+    if(!gag.ticket){
+        alignas(16) uint8_t scope[0x180]{},plan[0x20]{},desc[0x30]{},result[16]{};
+        g_scope(scope,At<void*>(root,0x128),0);g_plan(plan,scope,At<uint32_t>(root,0x270),0,1);
+        ImageDesc(desc,kSnapshotWidth,kSnapshotHeight,0x61,0x06); // sampled + transfer destination
+        g_image(plan,&gag.image,desc);g_commit(scope,result,&gag.ticket,At<void*>(root,0x160));g_end(scope);
+        if(result[0]||!gag.ticket||!gag.image.context){gag.error=2;return;}
+    }
+    if(!UploadPixels(root,gag.image,g_gagUpload->pixels)){gag.error=3;return;}
+    gag.place=g_gagUploadPlace;g_gagUpload.reset();
+    greeneye::Host()->log("Town Portal: easter egg picture uploaded");
+}
+void GagGpuTickGuard() {
+    __try {GagGpuTick();}
+    __except(EXCEPTION_EXECUTE_HANDLER){if(g_gagGpu)g_gagGpu->error=0x80000001;}
+    static uint32_t reported=0;
+    if(g_gagGpu&&g_gagGpu->error&&g_gagGpu->error!=reported){
+        reported=g_gagGpu->error;char line[96]{};
+        std::snprintf(line,sizeof(line),"Town Portal: easter egg picture unavailable (error %u)",reported);greeneye::Host()->log(line);
+    }
+}
+const Snapshot* GagSnapshot(const PortalInstance& p,bool field,uint64_t now) {
+    if(!g_gagGpu||!g_gagGpu->ticket||g_gagGpu->error||g_gagShown.portalId!=p.portalId||g_gagShown.place!=g_gagGpu->place)return nullptr;
+    int place=0;uint64_t t=0;
+    if(!easter::Playing(p.portalId,now,place,t)||!easter::ShowsPicture(t))return nullptr;
+    Snapshot& s=g_gagShown.ends[field?0:1];
+    s.image=g_gagGpu->image;s.tick=now;
+    return &s;
+}
+void ShowGagImpl(const PortalInstance& portal,int place,std::shared_ptr<sharing::Image> image) {
+    const float exposure=FrameExposure();
+    std::lock_guard lock(g_lock);
+    GagShown shown{portal.portalId,place,{}};
+    for(int side=0;side<2;++side){
+        // The field end looks to the base end; the base end to the field end, turned round.
+        const PortalEndpoint at=side==0?portal.baseEnd:portal.fieldEnd.Turned();
+        sharing::Image placed{};
+        defaultview::Place(at.wx,at.wy,at.wz,at.nx,at.nz,placed.meta);
+        // As if captured in this frame, like a default picture: shown at its own brightness.
+        placed.meta.exposure=exposure;
+        shown.ends[side]=ShareSnapshot(placed,ImageView{});
+    }
+    g_gagShown=shown;
+    if(image){g_gagUpload=std::move(image);g_gagUploadPlace=place;}
+}
+int GagPlaceImpl() {
+    std::lock_guard lock(g_lock);
+    return g_gagGpu&&g_gagGpu->ticket&&!g_gagGpu->error?g_gagGpu->place:-1;
+}
+
 void SharedGpuStatus(char* out,uint32_t capacity){
     std::lock_guard lock(g_lock);
     if(!g_sharedGpu)return;

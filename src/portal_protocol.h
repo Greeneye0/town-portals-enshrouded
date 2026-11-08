@@ -187,4 +187,45 @@ inline bool ParsePortalClose(std::string_view text, PortalCloseMsg& out) {
     return true;
 }
 
+// A player's preferred portal colour (portal_colors.h), sent with each announcement of their
+// portal. Format: "/tpk1 <playerId> <slot + 1, 0 for none>". Older versions keep it out of sight.
+inline int FormatColour(char* buf, size_t cap, uint32_t playerId, int slot) {
+    return sprintf_s(buf, cap, "/tpk1 %u %d", playerId, slot >= 0 && slot < 16 ? slot + 1 : 0);
+}
+
+inline bool ParseColour(std::string_view text, uint32_t& playerId, int& slot) {
+    if (!text.starts_with("/tpk1 ") || text.size() > 40) return false;
+    text.remove_prefix(6);
+    uint32_t id = 0, value = 0;
+    if (!detail::NextInt(text, id, false) || !detail::NextInt(text, value, true) || !id || value > 16) return false;
+    playerId = id;
+    slot = int(value) - 1;
+    return true;
+}
+
+// The easter egg (portal_easter.h), sent once by the player who opened the portal.
+// Format: "/tpx1 <portalId> <ownerAccount> <place>". Older versions keep it out of sight.
+struct EasterEggMsg {
+    uint64_t portalId{};
+    uint64_t ownerAccount{};
+    uint32_t place{};
+};
+
+inline int FormatEasterEgg(char* buf, size_t cap, const EasterEggMsg& m) {
+    return sprintf_s(buf, cap, "/tpx1 %llu %llu %u", static_cast<unsigned long long>(m.portalId),
+                     static_cast<unsigned long long>(m.ownerAccount), m.place);
+}
+
+inline bool ParseEasterEgg(std::string_view text, EasterEggMsg& out) {
+    if (!text.starts_with("/tpx1 ") || text.size() > 96) return false;
+    text.remove_prefix(6);
+    EasterEggMsg m{};
+    if (!detail::NextInt(text, m.portalId, false) || !detail::NextInt(text, m.ownerAccount, false) ||
+        !detail::NextInt(text, m.place, true) || !m.portalId || m.place > 15) {
+        return false;
+    }
+    out = m;
+    return true;
+}
+
 } // namespace portal

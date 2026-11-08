@@ -524,6 +524,16 @@ void main() {
                 float luma=dot(view,vec3(0.2126,0.7152,0.0722));
                 view=mix(vec3(luma),view,0.35)*vec3(0.42,0.58,0.85)*0.55;
             }
+            // The easter egg's static (snap.z above 1 by its strength, portal_easter.h): grey TV
+            // snow on the lens, a new frame every 1/24 s, as bright as the view behind it.
+            float snowAmount=clamp(snap.z-1.0,0.0,1.0);
+            if(snowAmount>0.001) {
+                vec2 cell=floor(uv*vec2(80.0,110.0));
+                float n=fract(sin(dot(cell+floor(t*24.0)*vec2(17.0,31.0),vec2(12.9898,78.233)))*43758.5453);
+                float scan=mod(cell.y,2.0)<1.0?1.0:0.75;
+                float level=max(dot(view,vec3(0.2126,0.7152,0.0722))*1.6,0.12);
+                view=mix(view,vec3(n*scan*level),snowAmount);
+            }
             interior*=1.0-0.85*see;
         }
         // Rim where the lens curves away from the viewer; it flares while forming.
