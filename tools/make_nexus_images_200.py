@@ -32,17 +32,17 @@ def v2_badge(im):
     from PIL import ImageDraw, ImageFilter
     over = Image.new('RGBA', im.size, (0, 0, 0, 0))
     d = ImageDraw.Draw(over)
-    cx, cy, r = 415, 90, 70
+    cx, cy, r = 1192, 166, 46
     shadow = Image.new('RGBA', im.size, (0, 0, 0, 0))
     ImageDraw.Draw(shadow).ellipse((cx - r + 6, cy - r + 8, cx + r + 6, cy + r + 8), fill=(0, 0, 0, 150))
     over.alpha_composite(shadow.filter(ImageFilter.GaussianBlur(6)))
     d.ellipse((cx - r, cy - r, cx + r, cy + r), fill=(120, 30, 10, 255))
-    d.ellipse((cx - r + 7, cy - r + 7, cx + r - 7, cy + r - 7), fill=(235, 110, 25, 255))
-    d.ellipse((cx - r + 7, cy - r + 7, cx + r - 7, cy + 4), fill=(250, 170, 45, 255))
-    d.ellipse((cx - r + 14, cy - r + 14, cx + r - 14, cy + r - 14), outline=(255, 225, 150, 255), width=3)
-    f = font(True, 66)
+    d.ellipse((cx - r + 5, cy - r + 5, cx + r - 5, cy + r - 5), fill=(235, 110, 25, 255))
+    d.ellipse((cx - r + 5, cy - r + 5, cx + r - 5, cy + 3), fill=(250, 170, 45, 255))
+    d.ellipse((cx - r + 10, cy - r + 10, cx + r - 10, cy + r - 10), outline=(255, 225, 150, 255), width=2)
+    f = font(True, int(r * 0.94))
     w = d.textlength('V2', font=f)
-    d.text((cx - w / 2, cy - 42), 'V2', font=f, fill=(255, 244, 214, 255), stroke_width=4, stroke_fill=(90, 20, 5, 255))
+    d.text((cx - w / 2, cy - r * 0.6), 'V2', font=f, fill=(255, 244, 214, 255), stroke_width=4, stroke_fill=(90, 20, 5, 255))
     im = im.convert('RGBA')
     im.alpha_composite(over)
     return im
