@@ -15,6 +15,8 @@ void SetClient(void* gameClient);
 
 // True while this process runs the authoritative ECS world (singleplayer, host, or dedicated server).
 bool HostsWorld();
+// On the host: entities round this place (near an end of an open portal) are sent to this player too, for 6 s.
+void RequestFarView(uint32_t playerId, float x, float z);
 bool HostAnswered();
 // Hosting: where the UI has this machine's player, to tell which player in the world is its own.
 void ObserveHostPosition(float wx, float wz);

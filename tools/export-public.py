@@ -13,6 +13,7 @@ out = root.parent / "TownPortals-public"
 KEEP = [
     "src", "tests", "build.bat", "build-dev.bat", "deploy.py", "mod.json",
     "assets/voice", "assets/biomes", "assets/easter", "assets/sounds/portal-summon.wav", "assets/sounds/portal-travel.wav",
+    "assets/sounds/portal-ambient.wav", "tools/make-ambient-shimmer.py",
     "assets/animations/SOURCE.md",  # the sounds' Pixabay original is not redistributed
     "assets/animations/portal-cast-retargeted.json",
     "assets/map/map-source-en.png", "assets/map/map-source-blank.png", "assets/map/map.jpg",
@@ -24,7 +25,7 @@ KEEP = [
     "tools/map/make_map.py", "tools/map/erase_labels.py", "tools/map/make_altar_icon.py",
     "tools/map/letter_map.py", "tools/map/label-names.json",
     "tools/map/make_backdrop.py", "tools/biome-shots/export_defaults.py",
-    "tools/package-release.py", "tools/release-readme.txt", "tools/export-public.py",
+    "tools/package-release.py", "tools/make_nexus_images_200.py", "tools/release-readme.txt", "tools/export-public.py",
     "tools/make_nexus_images.py",
 ]
 SKIP = ("__pycache__", ".pyc")

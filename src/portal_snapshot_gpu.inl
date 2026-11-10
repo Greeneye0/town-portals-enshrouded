@@ -143,6 +143,7 @@ bool HomeTransferTick(uint8_t* root) {
         } else {
             c.snapshots[slot]=ShareSnapshot(*image,c.snapshots[slot].image);
             g_snapshotShroud[slot]=image->meta.shroud!=0;
+            g_snapshotDefault[slot]=h.uploadWhat&&!std::strncmp(h.uploadWhat,"default ",8);
             h.uploadResult=1;
             std::snprintf(line,sizeof(line),"Town Portal: %s shown in snapshot slot %d (no capture needed)",h.uploadWhat,slot);
         }

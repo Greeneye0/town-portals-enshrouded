@@ -37,6 +37,9 @@ void main() {
         weight+=w;
     }
     rgb=weight>1e-5?rgb/weight:texelFetch(sampler2D(frameColor,imageSampler),pixel,0).rgb;
+    // A live view's frame (snap.z 1) is already anti-aliased and is shown from where it was
+    // taken: plain smooth sampling, with the depth still one surface's.
+    if(snap.z>0.5) rgb=textureLod(sampler2D(frameColor,imageSampler),uv,0.0).rgb;
     float z=60000.0;                              // sky: never reached
     if(d>0.0) {
         // Reconstruct the depth at the native sample's centre, not at the

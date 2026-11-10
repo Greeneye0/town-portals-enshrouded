@@ -29,8 +29,29 @@ struct Snapshot {
 // Snapshots taken in the Shroud. The game colours the Shroud dark blue after the point a
 // snapshot is taken from, so these get a similar grade when shown (not kept across reloads).
 bool g_snapshotShroud[kSnapshots]{};
+// Slots holding a default picture of a region (not a capture of the place): with the live view on
+// these are not shown; a portal with nothing of its own shows a soft turbulence while the far
+// side loads (user, 2026-11-10).
+bool g_snapshotDefault[kSnapshots]{};
 const Snapshot* SharedSnapshot(const PortalInstance& p,bool destinationBase,bool& shroud);
 const Snapshot* GagSnapshot(const PortalInstance& p,bool field,uint64_t now); // the easter egg's picture
+// The live view (portal_scene_probe.cpp LiveCapture): the second camera's latest frame of what
+// this endpoint leads to, taken from the viewer's eye carried through the portal; null when
+// there is none fresh. IsLiveSnapshot: that one (the shader traces it from the eye itself).
+const Snapshot* LiveSnapshot(const PortalInstance& p,bool field,uint64_t now);
+bool IsLiveSnapshot(const Snapshot* s);
+bool LiveOnly(uint64_t now);
+float LiveFade(const Snapshot* s,uint64_t now);
+// How far a live frame is traced from the viewer's eye as it is now (1) or as it was when the
+// frame was taken (0); a dev test (tools\motion.tune) can lower it.
+std::atomic<float> g_liveParallax{1.f};
+bool g_innerDraw{}; // set while a portal is drawn into the second camera's own frame
+std::atomic<int> g_liveTestMode{-1};
+// Dev test switches for the live view ("cycle2" in tools\motion.tune): its frame taken before
+// the second camera's anti-aliasing, the camera not aimed and zoomed at the exit, and the
+// least time between its frames (ms).
+std::atomic<bool> g_liveRaw{false},g_liveNoAim{false}; // the frame after the second camera's own anti-aliasing (steady), sharpened in the shader; cycle2's B shows the raw one
+std::atomic<uint32_t> g_liveEveryMs{0}; // a live frame every game frame: at 30 a second the view moved in steps and smeared between them (2026-11-09)
 // The easter egg's static on this portal's lens now (0 none).
 inline float EasterSnow(uint64_t portalId,uint64_t now) {
     int place=0;uint64_t t=0;
@@ -88,6 +109,9 @@ CompositeState* g_composite{};
 // GTX 1060, 2026-11-02). Kept apart from CompositeState so its layout stays the same.
 struct SnapshotScratch {ImageView image{};uint32_t ticket{},error{};};
 SnapshotScratch* g_snapshotScratch{};
+// The image for a second live end (two ends of a portal in sight take turns with the one
+// second camera, see LiveImage), with its own allocation ticket.
+SnapshotScratch* g_liveSecond{};
 // Separate kept value: changing the capture filter invalidates baked pixels
 // without changing CompositeState's layout or freeing its in-flight GPU images.
 uint32_t* g_snapshotCaptureHash{};
@@ -113,6 +137,11 @@ bool CompositeAllowed() {
 // Endpoints the HUD renderer asked for this frame (nearest first). Normal
 // portals use these; the live-view probe keeps its own g_livePortal.
 struct CompositeSlot {PortalInstance portal{};bool field{};uint32_t tint=colors::kUnknown;};
+// The endpoints the last in-frame record drew with a view of the other side: their vertices,
+// that view's picture and where they stand, for the motion pass (MotionRecord).
+struct MotionSlot {float vertices[3*kVertexFloats];ImageView image;PortalEndpoint end;};
+MotionSlot g_motionSlots[2]{};
+uint32_t g_motionCount{};
 CompositeSlot g_compositeSlots[kCompositeSlots]{};
 uint32_t g_compositeSlotCount{};
 uint64_t g_compositeSlotTick{};
@@ -144,6 +173,11 @@ void CompositeRelease() {
     if(g_composite->snapshotTicket&&g_target&&g_target->root)
         g_release(At<void*>(reinterpret_cast<void*>(g_target->root),0x160),&g_composite->snapshotTicket);
     if(g_snapshotScratch)*g_snapshotScratch={}; // allocated under snapshotTicket
+    if(g_liveSecond){
+        if(g_liveSecond->ticket&&g_target&&g_target->root)
+            g_release(At<void*>(reinterpret_cast<void*>(g_target->root),0x160),&g_liveSecond->ticket);
+        *g_liveSecond={};
+    }
     CompositeReleaseObject(g_composite->layout);
     if(g_composite->bindings&&g_composite->graphics)
         Native<void(*)(void*,void**)>(0xfe8740)(g_composite->graphics,&g_composite->bindings);
@@ -266,7 +300,7 @@ uint8_t* CompositeCommand(void* pass,uint8_t opcode,uint16_t size) {
 // snapshot shown in it.
 bool CompositeCoordinates(void* state,const PortalEndpoint& end,bool live,float form,uint32_t tint,bool inFrame,
                           const Snapshot* snapshot,const PortalEndpoint& destination,float exposureScale,
-                          const CastEffectState* cast,float* vertices,float snow=0.f) {
+                          const CastEffectState* cast,float* vertices,float snow=0.f,float waterLevel=-1.f) {
     math::PortalScreenPlane plane{};
     // The game's projection carries its temporal anti-aliasing jitter in [8] and [9] (a new
     // sub-pixel offset every frame, measured live). Drawn into the game's frame the portal
@@ -301,17 +335,42 @@ bool CompositeCoordinates(void* state,const PortalEndpoint& end,bool live,float 
         if(snapshot){
             SnapshotRows(*snapshot,destination,v+32);
             v[44]=kWindowStart;v[45]=exposureScale;v[46]=1+std::clamp(snow,0.f,1.f); // 1: bound; above it the easter egg's static
-            v[47]=SnapshotIsShroud(snapshot)?1.f:0.f;
+            // 2..3: a live frame. Its fraction carries two things: 0.5 when the view follows the
+            // eye (always, but for a dev test), and up to 0.45 more for how much smaller the
+            // game renders than it shows (render height over output height, 1 without an
+            // upscaler): the game's upscaler rebuilds detail finer than a rendered pixel from
+            // samples that move a little every frame, so the live frame is then read as finely
+            // as a shown pixel, not averaged over a rendered one, which left the far walls
+            // soft next to the real ones (2026-11-09).
+            float fine=1.f;
+            if(g_world&&g_world->scene){
+                const uint32_t shown=At<uint32_t>(reinterpret_cast<void*>(g_world->scene),0x20),rendered=At<uint32_t>(state,0xa0);
+                if(shown>=360&&rendered>=180&&rendered<=shown)fine=float(rendered)/float(shown);
+            }
+            v[47]=IsLiveSnapshot(snapshot)?2.f+(g_liveParallax.load()>=0.5f?0.5f:0.f)+0.45f*fine+(g_innerDraw?4.f:0.f):SnapshotIsShroud(snapshot)?1.f:0.f;
         }
+        // No picture at all: only the waiting mark (exposureScale -5, the shader's soft turbulence).
+        else if(exposureScale<0.f){v[45]=exposureScale;v[46]=0;}
         // The caster's hand in this portal's space (metres: right, up, normal from its centre).
         if(cast&&cast->effect>0){
             const float hx=cast->hand[0]-end.wx,hy=cast->hand[1]-(end.wy+1.62f),hz=cast->hand[2]-end.wz;
             v[48]=hx*end.rx+hz*end.rz;v[49]=hy;v[50]=hx*end.nx+hz*end.nz;v[51]=float(cast->effect);
         }
+        // Otherwise the same four floats carry the water at the far end (w -1): its height in
+        // window space (metres above the far end's centre). While the cast effect shows (the
+        // first second of a new portal) the water look waits.
+        else if(snapshot&&waterLevel>0.f){v[48]=waterLevel-1.62f;v[49]=0;v[50]=0;v[51]=-1.f;}
     }
     return true;
 }
 
+// How high the water stands at the end a portal end leads to (metres above its foot; -1 dry or
+// not known): measured by the host (portal_water.cpp).
+float FarWaterLevel(const PortalInstance& p,bool field) {
+    float f=-1,b=-1;
+    if(!portal::water::KnownLevels(p.portalId,f,b))return -1.f;
+    return field?b:f;
+}
 // The endpoints the HUD asked for this frame (or the live-view probe's).
 uint32_t CompositeGather(CompositeSlot* slots,uint64_t now) {
     uint32_t count=0;
@@ -354,9 +413,11 @@ int FindSnapshot(const PortalEndpoint& end) {
 // is dim rather than black; never darkened. lightOnly: only the portals' glow on the ground,
 // for the frame a snapshot is taken from (it hides the portals, and without their light a
 // dark spot such as a sewer came out black, 2026-10-31).
+float g_swirlVertices[kCompositeSlots][3*kVertexFloats]{};uint32_t g_swirlCount{};
 void CompositeRecord(void* pass,void* state,const ImageView& depth,bool inFrame,
                      const CompositeSlot* slots,uint32_t count,uint64_t now,float invExposure=0,bool lightOnly=false) {
     auto& c=*g_composite;
+    if(inFrame&&!lightOnly){g_motionCount=0;g_swirlCount=0;}
     float vertices[kCompositeSlots][3*kVertexFloats]{};bool drawn[kCompositeSlots]{};
     const Snapshot* snapshot[kCompositeSlots]{};
     for(uint32_t i=0;i<count;++i){
@@ -364,8 +425,17 @@ void CompositeRecord(void* pass,void* state,const ImageView& depth,bool inFrame,
         const PortalEndpoint destination=slot.field?slot.portal.baseEnd:slot.portal.fieldEnd.Turned();
         if(inFrame&&invExposure>0){
             bool shroud=false;snapshot[i]=GagSnapshot(slot.portal,slot.field,now);
-            if(!snapshot[i])snapshot[i]=SharedSnapshot(slot.portal,slot.field,shroud);
-            if(!snapshot[i]){int local=FindSnapshot(destination);if(local>=0){snapshot[i]=&c.snapshots[local];g_snapshotShown[local]=now;}}
+            if(!snapshot[i])snapshot[i]=LiveSnapshot(slot.portal,slot.field,now);
+            const bool liveOnly=false; // the pictures are back while the far side loads, shown wavy (user, 2026-11-10)
+            if(!snapshot[i]&&!liveOnly)snapshot[i]=SharedSnapshot(slot.portal,slot.field,shroud);
+            if(!snapshot[i]&&!liveOnly){int local=FindSnapshot(destination);if(local>=0){snapshot[i]=&c.snapshots[local];g_snapshotShown[local]=now;}}
+            if(snapshot[i]&&LiveOnly(now))
+                for(int k=0;k<kSnapshots;++k)if(snapshot[i]==&c.snapshots[k]&&g_snapshotDefault[k]){snapshot[i]=nullptr;break;}
+            {   // Dev: tools/blank.test shows every portal as still waiting for its picture (to judge the look).
+                static uint64_t checked=0;static bool blank=false;
+                if(now-checked>1000){checked=now;blank=GetFileAttributesW(L"C:/Mods/Enshrouded/TownPortal/tools/blank.test")!=INVALID_FILE_ATTRIBUTES;}
+                if(blank)snapshot[i]=nullptr;
+            }
             // Either side: the way home too has a default picture until a capture of the altar
             // matches (none yet, or the base end moved since the saved one was taken).
             if(!snapshot[i]&&!slot.portal.closing)g_missing={slot.portal.portalId,now,destination};
@@ -378,8 +448,17 @@ void CompositeRecord(void* pass,void* state,const ImageView& depth,bool inFrame,
         const Snapshot* shown=snapshot[i];
         const bool casting=inFrame&&slot.field&&g_cast.effect>0&&g_cast.portalId==p.portalId&&!p.closing;
         drawn[i]=CompositeCoordinates(state,slot.field?p.fieldEnd:p.baseEnd,live,form,slot.tint,inFrame,
-                                      shown,destination,shown?std::clamp(std::sqrt(shown->exposure*invExposure),1.f,4.f):0.f,
-                                      casting?&g_cast:nullptr,vertices[i],EasterSnow(p.portalId,now));
+                                      shown,destination,
+                                      // A live frame shows the far end as bright as it is there; an
+                                      // old snapshot of a darker place is lifted a little.
+                                      // Negative: shown wavy (portal_composite.frag, snap.y). A waiting picture
+                                      // while the live view is on its way: -(10 + brightness); the live view's
+                                      // first 0.8 s: minus how far it has settled.
+                                      !shown?(inFrame&&LiveOnly(now)?-5.f:0.f):IsLiveSnapshot(shown)?(LiveFade(shown,now)<1.f?-std::max(0.004f,LiveFade(shown,now)):1.f)
+                                            :LiveOnly(now)?-(10.f+std::clamp(std::sqrt(shown->exposure*invExposure),1.f,4.f))
+                                            :std::clamp(std::sqrt(shown->exposure*invExposure),1.f,4.f),
+                                      casting?&g_cast:nullptr,vertices[i],EasterSnow(p.portalId,now),
+                                      FarWaterLevel(p,slot.field));
     }
     Native<void(*)(void*,uint64_t)>(0x47a70)(pass,0x7ffffffff);
     auto* graph=At<uint8_t*>(pass,0);
@@ -436,6 +515,16 @@ void CompositeRecord(void* pass,void* state,const ImageView& depth,bool inFrame,
         auto* mapped=Native<float*(*)(void*,void*,int)>(0x148a50)(pass,c.vertices,3);
         if(!mapped)continue;
         std::memcpy(mapped,vertices[i],sizeof(vertices[i]));
+        // A portal with no picture (its swirl) still gets its depth written (DepthRecord): far
+        // water and mist behind it were laid across the swirl (2026-11-10).
+        if(inFrame&&!lightOnly&&!snapshot[i]&&g_swirlCount<std::size(g_swirlVertices)&&g_target&&g_target->color.context){
+            std::memcpy(g_swirlVertices[g_swirlCount++],vertices[i],sizeof(vertices[i]));
+        }
+        if(inFrame&&!lightOnly&&snapshot[i]&&g_motionCount<std::size(g_motionSlots)){
+            auto& m=g_motionSlots[g_motionCount++];
+            std::memcpy(m.vertices,vertices[i],sizeof(m.vertices));m.image=snapshot[i]->image;
+            m.end=slots[i].field?slots[i].portal.fieldEnd:slots[i].portal.baseEnd;
+        }
         renderedPortal[renderedCount]=slots[i].portal.portalId;
         renderedField[renderedCount]=slots[i].field;++renderedCount;
     }

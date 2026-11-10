@@ -28,7 +28,30 @@ layout(location=9) flat out vec4 inFrame;
 layout(location=10) flat out vec4 snapRows[3];
 layout(location=13) flat out vec4 snap;
 layout(location=14) flat out vec4 castInfo;
+// Motion pass (settings.x +1000): the game's motion vectors for the view through the portal.
+// colour, frame and castIn then hold rows x, y, w taking portal metres to the previous frame's
+// clip space (no jitter); coordinates x, y this frame's jitter in NDC.
+layout(location=15) flat out vec4 prevRows[3];
+layout(location=18) flat out vec3 motionJitter; // z: a scale on the motion written
 void main() {
+    if(settings.x>999.5&&settings.x<1999.5) {
+        gl_Position=vec4(position.x,-position.y,0,1);
+        plane=vec4(0);
+        options=settings;
+        ndc=position;
+        rows[0]=local0;rows[1]=local1;rows[2]=local2;rows[3]=local3;
+        tint=vec3(0);
+        depthShift=vec2(0);
+        inFrame=vec4(1);
+        snapRows[0]=snapshotX;snapRows[1]=snapshotY;snapRows[2]=snapshotW;
+        snap=snapshotInfo;
+        castInfo=vec4(0);
+        prevRows[0]=colour;prevRows[1]=frame;prevRows[2]=castIn;
+        motionJitter=coordinates.xyz;
+        return;
+    }
+    prevRows[0]=vec4(0);prevRows[1]=vec4(0);prevRows[2]=vec4(0);
+    motionJitter=vec3(0);
     gl_Position=vec4(position.x,-position.y,0,1);
     plane=coordinates;
     options=settings;

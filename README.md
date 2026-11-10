@@ -11,11 +11,13 @@ the release zip on this repository's Releases page.
 
 ## Features
 
-- **Portals with a view.** Each end shows a snapshot of where it leads, with depth as you move
-  (taken when you travel; not a live image). Before the first trip, the altar's portal shows a
-  landmark of that region, by day or by night. Your altar's picture is saved for the next login.
-- **Multiplayer.** Other players can use your portal, and see its pictures (shared between
-  clients). Dedicated servers run the server companion.
+- **Live portals (2.0).** Each end shows the other side live through a second camera, like a
+  window: movement, day and night, effects, water, and the people, animals and enemies near the
+  far end (the host keeps the area round open portal ends loaded and sends what lives there).
+  `LiveView=Off` brings back the 1.x snapshots with depth as you move. While the far side loads,
+  the portal shows its last picture of the place, wavy; a soft hum plays near open portals.
+- **Multiplayer.** Other players can use your portal and look through it. Dedicated servers run
+  the server companion, which also sends a portal's far side.
 - **A travel map.** While you travel, a painted world map shows the trip: your portal, your
   altar, and a path that grows as the destination loads.
 - **Lighter portals** on low graphics settings (or `PortalQuality=Low`).
@@ -48,7 +50,9 @@ glslang), `tools/map/*.py` (the loading-screen map, its labels and warp),
 - `src/main.cpp` gameplay: casting, travel, prompts, the portal list and multiplayer messages
 - `src/portal_render.cpp` HUD: prompts, notices, the loading screen and its map
 - `src/portal_scene_probe.cpp`, `portal_composite.inl`, `portal_snapshot_gpu.inl`: the in-frame
-  portal renderer, snapshots and their GPU transfers
+  portal renderer, the live view's second camera, snapshots and their GPU transfers
+- `src/portal_travel.cpp`: travel, the host side (far-side relevance, areas kept loaded)
+- `src/portal_ambient.cpp`: the hum near open portals
 - `src/portal_snapshot_share.cpp`, `portal_snapshot_cache.cpp`: sharing pictures and the saved
   home picture
 - `tests/` offline tests, run by `build.bat`

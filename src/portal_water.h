@@ -19,4 +19,15 @@ void ServerTick(void* server);
 bool Prepare();
 void Resume();
 
+// How high the water stands at each end of a portal, in metres above that end's foot (-1: dry
+// there). Measured on the world's host every half second, for every open portal, so the view
+// through a portal can show water the far end stands in (the far camera stands in air at the
+// viewer's eye height and does not draw it). false when this process is not the host or the
+// portal is unknown.
+bool Levels(uint64_t portalId, float& field, float& base);
+// Levels heard from the host ("/tpw1"), for clients; kept 8 s.
+void SetHeardLevels(uint64_t portalId, float field, float base);
+// Measured here when hosting, else heard.
+bool KnownLevels(uint64_t portalId, float& field, float& base);
+
 } // namespace portal::water

@@ -36,6 +36,8 @@ bool MissingSnapshot(uint64_t& portalId,PortalEndpoint& destination,uint64_t aft
 // The game frame's exposure (as a capture records it); 0 before the first frame. A snapshot
 // made outside a capture gets this one so it shows as if taken now.
 float FrameExposure();
+// Dev: the live view test in progress (0-3 = A-D), or -1.
+int LiveTestMode();
 // The easter egg (portal_easter.h), gameplay thread: show this place's picture at both ends of the
 // portal while its gag plays. image: the decoded picture (portal_default_images.h), or null when
 // GagPlace() already is this place. GagPlace: the place whose picture is uploaded, or -1.
@@ -51,8 +53,11 @@ bool SnapshotBusy();
 // Whether snapshots can be taken; when not yet, asks the render thread to make the images
 // (normally made for the first portal in view). Call again later.
 bool SnapshotsReady();
+// The far end of the portal whose live view was drawn in the last second and a half.
+bool LiveFarPoint(float& x,float& z);
 // Both local-player body and carried-equipment hiding hooks are available.
 bool HidesPlayer();
+bool ListenerPose(float& x,float& y,float& z,float& rightX,float& rightZ);
 // The spell effect while a portal forms: from the caster's hand (world metres) to that
 // portal's field end; effect 1-3 (portal_composite.frag CastEffect), 0 or portalId 0 for none.
 void SetCast(uint64_t portalId,float x,float y,float z,int effect);

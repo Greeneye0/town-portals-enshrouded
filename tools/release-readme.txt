@@ -1,4 +1,4 @@
-Town Portals 1.0.13 for Enshrouded
+Town Portals 2.0.0 for Enshrouded
 Saving your ass since 2026.
 
 Open a portal home from anywhere. Press T: after a short cast, a portal opens in front
@@ -17,11 +17,17 @@ HOW IT WORKS
 - Each player has one portal. Opening a new one replaces your old one.
 - Other players can use your portal (the prompt says it is shared). Everyone in the world
   needs Town Portals; on a dedicated server, the server needs it too (server/).
-- The portal shows a picture of where it leads, with depth as you move around it. It is a
-  snapshot, not a live view: it is taken when you travel through, and refreshed every trip.
-  Before your first trip to a place, the altar's portal shows a landmark of that region,
-  by day or by night. Your altar's picture is saved, so it shows again at your next login.
-  In multiplayer, players share their pictures, so others see your portal's view too.
+- The portal shows the other side live, like a window: things move in it, day and night
+  change, and you can walk round it to see more. People, animals and enemies near the far
+  end show too (on a dedicated server, the server needs Town Portals 2.0 for that). While
+  the far side loads, the portal shows its last picture of the place as if through water.
+  LiveView in town-portal.ini: Full (default), Balanced (no water in the far view), Fast
+  (also no bounced light, darker) or Off (the 1.x still pictures, with depth as you
+  move: no live view, no frame rate cost). The live view costs
+  frame rate while a portal is on screen; Balanced, Fast or Off give some back.
+- While a portal is open, the area round each of its ends stays loaded on the host, so the
+  creatures there stay too.
+- An open portal hums softly when you stand near it (the game's Master and Ambience volume).
 - While you travel, a painted world map shows the trip: your portal, your altar, and a
   path that grows as the destination loads, with a loading percentage. The map is
   lettered in the game's language (your own map: map\map-<language>.jpg, e.g. map-ru.jpg).
@@ -72,7 +78,7 @@ Dedicated server (server admin only)
    On a rented server, upload the same files next to enshrouded_server.exe with the
    host's file manager (if it lets you add DLL files).
 
-Check: greeneye\loader.log has a line with "Town Portals 1.0.13" (the server's says
+Check: greeneye\loader.log has a line with "Town Portals 2.0.0" (the server's says
 "server companion loaded").
 Uninstall: delete greeneye\town-portal (and dbgcore.dll if no other Greeneye mod uses
 it), in the game folder and on the server.
@@ -80,6 +86,7 @@ it), in the game folder and on the server.
 SETTINGS: greeneye\town-portal\town-portal.ini (written on first start)
 [Portals] (the host's file: the dedicated server's, or the hosting player's)
   AllowInShroud=true, AllowInHollowHalls=true, DisableAutoClose=false
+  LiveView=Full          Full, Balanced, Fast or Off (each player's own: read from your file)
 [Controls] (each player's own)
   OpenPortalKey=T        a letter, F1-F24, Mouse4, Mouse5, ... or a key code like 0x54
   InteractKey=Auto       the key that uses a portal: Auto follows the game's Interact key
@@ -89,11 +96,14 @@ SETTINGS: greeneye\town-portal\town-portal.ini (written on first start)
 Picture sharing: delete greeneye\town-portal\share-snapshots.enabled to turn it off.
 
 KNOWN LIMITATIONS
-- The picture in a portal is a snapshot, not a live image of the other side.
-- A portal's picture is only accurate after a trip through it: until then the altar's
-  portal shows a landmark of the region, and the field's portal your altar as last seen.
-- Slight visual anomalies in the portal's picture: blocky, stair-stepped edges when seen
-  from aside or close up, and stretched spots behind objects the snapshot could not see.
+- The live view costs frame rate while a portal is on screen (on the RTX 5090 laptop it was
+  made on, about 74 to 40 frames a second); LiveView=Balanced, Fast or Off gives some back.
+- The far side takes a few seconds to load the first time; a portal shows its last picture
+  of that place, wavy, until then.
+- Things far from the portal's far end show in less detail, and some small effects can be
+  missing there.
+- Other players standing at the far end have not been tested yet.
+- Creatures by an open portal's far end stay while the portal is open, even with nobody there.
 - The world map is a painting: the portals' places on it are approximate.
 - The loading percentage is an estimate from the trip's stages, not the game's own count.
 - Only the keyboard's Interact key is kept from other objects at the prompt, not a

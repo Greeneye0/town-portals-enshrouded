@@ -1148,9 +1148,9 @@ void DrawEndpoint(void* widget, const CameraFrame& cam, const Candidate& candida
     // Keep texture lookup and all visibility work AFTER frustum/distance culling.
     if (!texture) return;
     uint32_t liveImage=0;
-#ifdef TOWN_PORTAL_DEV
+    // The live view (sceneprobe::LiveImage asks for the second camera; dev-only until 2.0, which
+    // left release builds on the waiting picture for ever).
     if(auto* registry=WidgetImageRegistry(widget))liveImage=sceneprobe::LiveImage(portal,candidate.field,registry,now);
-#endif
     // GPU depth compositor: per-pixel occlusion against the game's depth
     // buffer. One full-screen image holds every composited endpoint, so draw
     // it once per HUD frame; endpoints it did not render use the tiles below.
@@ -1977,9 +1977,7 @@ void DrawHudFrame(uint8_t* uiClient,const std::vector<PortalInstance>& portals,
     ++g_hudFrame;
     DetectLanguage(g_observedAssets,now);
     ResolveTexts();
-#ifdef TOWN_PORTAL_DEV
-    sceneprobe::GameplayHud(uiClient[0x1cd8]==1,now);
-#endif
+    sceneprobe::GameplayHud(uiClient[0x1cd8]==1,now); // the second camera renders only during play
     if (uiClient[0x1cd8]!=1) return;
     std::string title,body;
     {

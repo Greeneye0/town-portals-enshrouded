@@ -5,6 +5,7 @@
 #include "greeneye.h"
 #include <windows.h>
 #include <atomic>
+#include <mutex>
 #include <cstdio>
 #include <cstring>
 #include <vector>
@@ -54,7 +55,15 @@ constexpr uint8_t kDispenserKind = 1;
 constexpr uint32_t kDispenserValue = 1024;
 
 constexpr float kHalfHeight = 1.62f;  // the portal's centre above its ground point
-constexpr float kSpoutHeight = 1.0f;  // where the water comes out
+// Where the water comes out: at the bottom of the portal (the user's choice, 2026-11-10), just
+// in front of its face. Never high above the end's foot: the end is checked there at kPourFrom
+// (1.1 m), and the spout's own cell or its falling stream then reads as water. At 1.0 m and at
+// 2.0 m straight up the spout switched itself off every half second and never poured (server
+// log 2026-11-10). Not in the ground cell either: at 0.3 m the spout was active but nothing came
+// out (the water simulation's half-metre cell at the foot holds ground). 0.75 m is the next
+// cell up, still below the 1.1 m check; the water only reaches that once the pool is that deep.
+constexpr float kSpoutHeight = 0.75f;
+constexpr float kSpoutOut = 0.25f;
 constexpr int64_t kFixedOne = int64_t(1) << 32;
 
 struct Spout {
@@ -116,8 +125,10 @@ void* SimOf(void* server) {
     }
 }
 
-bool Submerged(void* sim, const PortalEndpoint& end) {
-    int64_t pos[3]{end.pos.x, end.pos.y + int64_t(kHalfHeight * double(kFixedOne)), end.pos.z};
+// height: how far above the end's foot the water has to reach.
+constexpr double kPourFrom = 1.1; // a third of the portal's 3.3 m (user's choice, 2026-11-10)
+bool Submerged(void* sim, const PortalEndpoint& end, double height = kHalfHeight) {
+    int64_t pos[3]{end.pos.x, end.pos.y + int64_t(height * double(kFixedOne)), end.pos.z};
     auto** holder = static_cast<void**>(sim); // the WaterSimulationServer resource: its first field is the simulation
     __try {
         return g_inWater(holder, pos) != 0;
@@ -125,6 +136,31 @@ bool Submerged(void* sim, const PortalEndpoint& end) {
         return false;
     }
 }
+
+// The water's height at an end, metres above its foot: the highest of 0.25 m steps up to 3.6 m
+// that is under water, refined to about 2 cm. -1 when the foot itself is dry.
+float LevelAt(void* sim, const PortalEndpoint& end) {
+    constexpr double kStep = 0.25, kTop = 3.6;
+    if (!Submerged(sim, end, 0.1)) return -1.f;
+    double wet = 0.1;
+    while (wet + kStep <= kTop && Submerged(sim, end, wet + kStep)) wet += kStep;
+    if (wet + kStep > kTop) return float(kTop);
+    double dry = wet + kStep;
+    for (int i = 0; i < 4; ++i) {
+        const double mid = 0.5 * (wet + dry);
+        (Submerged(sim, end, mid) ? wet : dry) = mid;
+    }
+    return float(wet);
+}
+
+struct LevelRecord {
+    uint64_t portalId;
+    float field, base;
+    uint64_t tick;
+};
+std::mutex g_levelLock;
+std::vector<LevelRecord> g_measured; // this process hosts: every open portal, rebuilt each check
+std::vector<LevelRecord> g_heard;    // from the host
 
 bool Toggle(void* sim, uint32_t id, bool active) {
     auto** holder = static_cast<void**>(sim); // the WaterSimulationServer resource: its first field is the simulation
@@ -158,6 +194,9 @@ uint32_t SpoutId(uint64_t portalId, int side, const FixedPos& p) {
     mix(uint64_t(p.x >> 30)); // quarter metres
     mix(uint64_t(p.y >> 30));
     mix(uint64_t(p.z >> 30));
+    // The simulation keeps an id where it was first registered, so a new spout height needs new ids.
+    mix(uint64_t(kSpoutHeight * 100.0f));
+    mix(uint64_t(kSpoutOut * 100.0f));
     return 0x7e000000u | uint32_t(h & 0x00ffffffu);
 }
 
@@ -315,6 +354,17 @@ void ServerTick(void* server) {
     const bool enabled = Enabled() && !rules::NoFun();
     std::vector<PortalInstance> portals;
     travel::GetActivePortals(portals);
+    {
+        std::vector<LevelRecord> measured;
+        for (const auto& p : portals) {
+            if (!p.active || p.closing) continue;
+            const bool fieldSet = p.fieldEnd.pos.x || p.fieldEnd.pos.z, baseSet = p.baseEnd.pos.x || p.baseEnd.pos.z;
+            measured.push_back({p.portalId, fieldSet ? LevelAt(sim, p.fieldEnd) : -1.f,
+                                baseSet ? LevelAt(sim, p.baseEnd) : -1.f, now});
+        }
+        std::lock_guard guard(g_levelLock);
+        g_measured.swap(measured);
+    }
     for (auto& s : g_spouts) s.seen = false;
     for (const auto& p : portals) {
         if (!p.active || p.closing) continue;
@@ -326,26 +376,32 @@ void ServerTick(void* server) {
             Spout* spout = nullptr;
             for (auto& s : g_spouts)
                 if (s.id == id) spout = &s;
-            const bool want = enabled && Submerged(sim, from) && !Submerged(sim, to);
+            // Water comes through once a third of the end it enters is under (it had to
+            // reach the middle, which only a portal cast while swimming did: user, 2026-11-10),
+            // and until the other end is half under.
+            // ... and until the other end is a third under too (with "half under" for the other
+            // end, an end a third under poured back while it was still being filled: both ends
+            // poured at once, server log 2026-11-10).
+            const bool want = enabled && Submerged(sim, from, kPourFrom) && !Submerged(sim, to, kPourFrom);
             if (spout) spout->seen = true;
             if (want && (!spout || !spout->on)) {
                 if (!spout) {
-                    Register(sim, {to.wx, to.wy + kSpoutHeight, to.wz, id, kDispenserValue, kDispenserKind, 0, 1, 0});
+                    Register(sim, {to.wx + to.nx * kSpoutOut, to.wy + kSpoutHeight, to.wz + to.nz * kSpoutOut, id, kDispenserValue, kDispenserKind, 0, 1, 0});
                     if (!Toggle(sim, id, true)) continue; // outside the simulated area, or it was busy: next time
                     g_spouts.push_back({p.portalId, id, true, true});
                 } else if (Toggle(sim, id, true)) {
                     spout->on = true;
                 }
                 char line[160];
-                std::snprintf(line, sizeof(line), "Town Portal: portal %llu pours water at its %s end",
-                              static_cast<unsigned long long>(p.portalId), side == 0 ? "base" : "far");
+                std::snprintf(line, sizeof(line), "Town Portal: portal %llu pours water at its %s end (water %.2f m at the source, %.2f m here)",
+                              static_cast<unsigned long long>(p.portalId), side == 0 ? "base" : "far", LevelAt(sim, from), LevelAt(sim, to));
                 Log(line);
             } else if (!want && spout && spout->on) {
                 Toggle(sim, id, false);
                 spout->on = false;
                 char line[160];
-                std::snprintf(line, sizeof(line), "Town Portal: portal %llu stopped pouring at its %s end",
-                              static_cast<unsigned long long>(p.portalId), side == 0 ? "base" : "far");
+                std::snprintf(line, sizeof(line), "Town Portal: portal %llu stopped pouring at its %s end (water %.2f m at the source, %.2f m here)",
+                              static_cast<unsigned long long>(p.portalId), side == 0 ? "base" : "far", LevelAt(sim, from), LevelAt(sim, to));
                 Log(line);
             }
         }
@@ -360,6 +416,38 @@ void ServerTick(void* server) {
             ++i;
         }
     }
+}
+
+bool Levels(uint64_t portalId, float& field, float& base) {
+    std::lock_guard guard(g_levelLock);
+    const uint64_t now = GetTickCount64();
+    for (const auto& r : g_measured)
+        if (r.portalId == portalId && now - r.tick < 3000) {
+            field = r.field;
+            base = r.base;
+            return true;
+        }
+    return false;
+}
+
+void SetHeardLevels(uint64_t portalId, float field, float base) {
+    std::lock_guard guard(g_levelLock);
+    const uint64_t now = GetTickCount64();
+    std::erase_if(g_heard, [&](const LevelRecord& r) { return r.portalId == portalId || now - r.tick > 8000; });
+    g_heard.push_back({portalId, field, base, now});
+}
+
+bool KnownLevels(uint64_t portalId, float& field, float& base) {
+    if (Levels(portalId, field, base)) return true;
+    std::lock_guard guard(g_levelLock);
+    const uint64_t now = GetTickCount64();
+    for (const auto& r : g_heard)
+        if (r.portalId == portalId && now - r.tick < 8000) {
+            field = r.field;
+            base = r.base;
+            return true;
+        }
+    return false;
 }
 
 bool Prepare() {

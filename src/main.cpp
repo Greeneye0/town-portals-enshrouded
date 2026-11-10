@@ -13,6 +13,7 @@
 #include <string_view>
 #include <vector>
 #include "greeneye.h"
+#include "portal_ambient.h"
 #include "portal_build.h"
 #include "portal_natives.h"
 #include "portal_protocol.h"
@@ -1949,6 +1950,20 @@ void RunGameplayTick(void* app, std::vector<portal::PortalInstance>& outPortals,
 
     g_hostMod = EnsureHostHandshake(gameClient, currentWorld);
     if (g_hostMod == HostMod::present) AskHostRules(gameClient, currentWorld);
+    // While a portal shows its far side live, the host is asked to send what lives there.
+    if (static uint64_t askedFar = 0; uiClient && g_hostMod == HostMod::present && GetTickCount64() - askedFar > 2000) {
+        float farX = 0, farZ = 0;
+        const uint32_t playerId = *reinterpret_cast<uint32_t*>(uiClient + 0x18);
+        if (playerId && portal::sceneprobe::LiveFarPoint(farX, farZ)) {
+            askedFar = GetTickCount64();
+            if (portal::travel::HostsWorld()) portal::travel::RequestFarView(playerId, farX, farZ);
+            else {
+                char line[64]{};
+                std::snprintf(line, sizeof(line), "/tpv1 %u %d %d", playerId, int(farX), int(farZ));
+                SendHiddenLine(gameClient, line);
+            }
+        }
+    }
 
     // Our open portal is rebroadcast even without a position (dead, loading): the others close a
     // portal they have not heard of for 90 s (CloseSilentPortals).
@@ -1974,6 +1989,23 @@ void RunGameplayTick(void* app, std::vector<portal::PortalInstance>& outPortals,
     CheckDefaultPicture(uiClient, GetTickCount64());
     CheckGagPicture(GetTickCount64());
     UpdateColours(uiClient, gameClient, GetTickCount64());
+    {
+        float lx = 0, ly = 0, lz = 0, rx = 1, rz = 0;
+        const bool listener = portal::sceneprobe::ListenerPose(lx, ly, lz, rx, rz);
+        portal::ambient::Update(GetTickCount64(), lx, ly, lz, rx, rz, listener);
+    }
+#ifdef TOWN_PORTAL_DEV
+    {
+        // The live view's A-D comparison (portal_scene_probe.cpp MotionRecord).
+        static int shown = -1;
+        const int mode = portal::sceneprobe::LiveTestMode();
+        if (mode != shown) {
+            shown = mode;
+            static constexpr const char* kModes[] = {"A", "B", "C", "D"};
+            if (mode >= 0 && mode < 4) portal::render::ShowNotice("Live view test", kModes[mode], 5500);
+        }
+    }
+#endif
 
     bool inPlayHud = uiClient[0x1cd8] == 1 && (g_seenPlayFrame + 2 >= g_frame);
     // Two minutes of play on an untested build: it didn't crash on anything that runs early.
@@ -2309,6 +2341,7 @@ bool HotPrepare() {
     // departure is in use. The caller can retry after travel has completed.
     if (g_departure.gate.Active() || g_arrival.since || portal::sceneprobe::SnapshotBusy()) return false;
     if (!portal::water::Prepare()) return false; // this generation's spouts switch off first
+    portal::ambient::Stop();
     g_paused = true;
     RemoveKeyHook();
     portal::sharing::Stop();
@@ -2529,7 +2562,7 @@ GREENEYE_MOD_START {
     portal::rules::AddPortalsKey(L"NoFun", portal::rules::kNoFunKey);
 
     if (serverSide) {
-        Log("Town Portals 1.0.13: server companion loaded");
+        Log("Town Portals 2.0.0: server companion loaded");
         return true;
     }
 
@@ -2595,7 +2628,7 @@ GREENEYE_MOD_START {
     portal::casting::Init(host);
     LogGraphicsAdapters();
 
-    Log("Town Portals 1.0.13: press T or LB+Y on a controller (OpenPortalKey in town-portal.ini) to open a portal to your Preferred Spawn Flame Altar");
+    Log("Town Portals 2.0.0: press T or LB+Y on a controller (OpenPortalKey in town-portal.ini) to open a portal to your Preferred Spawn Flame Altar");
     return true;
 }
 

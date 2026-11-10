@@ -8,7 +8,10 @@
 #include "portal_snapshot_share.h"
 #include "portal_host_identity.h"
 #include "portal_easter.h"
+#include "portal_water.h"
+#include <algorithm>
 #include <atomic>
+#include <intrin.h>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -859,6 +862,305 @@ void UpsertPortalLocked(const PortalInstance& instance) {
     g_portals[oldestIdx] = instance;
 }
 
+// The far side of a portal, for a player who is looking through one. The game's server sends a
+// player the entities within 100 m (some kinds 200 m) of the player OR of the player's "hot
+// point", a second place it keeps for each player (16 of 12 bytes at ecs +0x7ddc10: x and z
+// in whole metres and a set flag; cleared each tick, FUN_140a23b90, and looked at by the
+// relevance test FUN_140a23f40 and the scene cell loader FUN_140a2b3d0). Farm animals at the
+// base were missing from a far portal's view because of that 100 m rule (2026-11-10). So a
+// client asks the host ("/tpv1 <player id> <x> <z>", every 2 s while it shows a live view)
+// and the host sets that player's hot point each tick, before the game lists its observers
+// (ObserversHook), for 6 s after the last request. Only a place near an end of an open portal
+// is taken. A hot point the game set itself that tick is left alone.
+// Open portal ends for the server's worker threads (the despawn check runs on several at once;
+// a try_lock on g_lock skipped the portal ends on every thread but one, and enemies 10 m from a
+// portal were despawned, 2026-11-10). Written once a tick by ObserversHook into the spare of two
+// buffers, then published by index; readers copy without a lock.
+struct EndList {uint32_t count;float xyz[32][3];};
+EndList g_endLists[2]{};
+std::atomic<uint32_t> g_endCurrent{0};
+std::atomic<uint64_t> g_endTick{0};
+void PublishEnds() {
+    if(!g_lock.try_lock())return; // keep the last list
+    std::lock_guard guard(g_lock,std::adopt_lock);
+    EndList& next=g_endLists[g_endCurrent.load()^1u];
+    next.count=0;
+    for(const auto& slot:g_portals){
+        if(!slot.active||slot.closing)continue;
+        for(const auto* end:{&slot.fieldEnd,&slot.baseEnd}){
+            if((!end->pos.x&&!end->pos.z)||next.count>=32)continue;
+            next.xyz[next.count][0]=end->wx;next.xyz[next.count][1]=end->wy;next.xyz[next.count][2]=end->wz;++next.count;
+        }
+    }
+    g_endCurrent.store(g_endCurrent.load()^1u);
+    g_endTick=GetTickCount64();
+}
+EndList CurrentEnds() {
+    EndList copy=g_endLists[g_endCurrent.load()];
+    if(GetTickCount64()-g_endTick.load()>5000)copy.count=0; // stale (no server tick)
+    if(copy.count>32)copy.count=0;
+    return copy;
+}
+struct HotPoint {std::atomic<int32_t> x{},z{};std::atomic<uint64_t> until{};};
+HotPoint g_hot[16];
+using ObserversFn=void*(*)(void* block,uint8_t* ecs,uint8_t simd);
+ObserversFn g_observers{};
+void* ObserversHook(void* block,uint8_t* ecs,uint8_t simd) {
+    greeneye::Lease lease;
+    if(lease&&ecs&&ecs[8]==0){ // the server's entities
+        PublishEnds();
+        const uint64_t now=GetTickCount64();
+        // Without a request, a player's hot point stays on the field end of their own open
+        // portal: the area round it then stays loaded and its creatures alive while they are
+        // away. Only while they looked through the portal was too late: an enemy by the far
+        // end was gone in the few seconds between stepping home and looking back (2026-11-10).
+        int32_t own[16][2]{};bool hasOwn[16]{};
+        if(g_lock.try_lock()){
+            std::lock_guard guard(g_lock,std::adopt_lock);
+            for(const auto& slot:g_portals){
+                if(!slot.active||slot.closing||slot.ownerPlayerId<1||slot.ownerPlayerId>16)continue;
+                if(!slot.fieldEnd.pos.x&&!slot.fieldEnd.pos.z)continue;
+                const int i=int(slot.ownerPlayerId)-1;
+                own[i][0]=int32_t(std::floor(slot.fieldEnd.wx));own[i][1]=int32_t(std::floor(slot.fieldEnd.wz));hasOwn[i]=true;
+            }
+        }
+        for(int i=0;i<16;++i){
+            const bool asked=g_hot[i].until.load()>now;
+            if(!asked&&!hasOwn[i])continue;
+            uint8_t* point=ecs+0x7ddc10+size_t(i)*0xc;
+            if(point[8])continue;
+            if(!asked){
+                static int32_t logged[16][2]{};
+                if(logged[i][0]!=own[i][0]||logged[i][1]!=own[i][1]){
+                    logged[i][0]=own[i][0];logged[i][1]=own[i][1];
+                    char line[120]{};
+                    std::snprintf(line,sizeof(line),"Town Portal: player %d's portal end at %d, %d stays loaded",i+1,own[i][0],own[i][1]);
+                    Log(line);
+                }
+            }
+            *reinterpret_cast<int32_t*>(point)=asked?g_hot[i].x.load():own[i][0];
+            *reinterpret_cast<int32_t*>(point+4)=asked?g_hot[i].z.load():own[i][1];
+            point[8]=1;
+        }
+    }
+    return g_observers(block,ecs,simd);
+}
+// Enemies by a portal's ends. The game's conditional_despawn (FUN_140332610) destroys a spawned
+// creature once no player stands within its despawn range, every 1-2 s; the positions it
+// compares come from a gatherer (FUN_1409df5f0 via FUN_1409df210) that lists each player's own
+// position only. So the scavenger standing by a portal's far end was gone by the time its
+// owner looked back through the portal (2026-11-10). Here, only for that caller (its return
+// address), each end of every open portal is added to that list as if a player stood there.
+// The list: {data, count, capacity (16 inline), grow callback}; 0x40-byte entries, entity id at
+// +0, x, y, z as 32.32 fixed point at +8, +0x10, +0x18, then rotation and scale. The despawn
+// test reads only x, y, z. Other callers (discovery of places, ...) are left alone.
+using GatherFn=uint64_t(*)(int64_t* list,void* query);
+GatherFn g_gather{};
+const uint8_t* g_despawnReturn{};
+std::atomic<uint32_t> g_keptAlive{};
+std::atomic<int> g_transformType{-1};
+// CurrentTransform's type number this session (the gatherer reads player positions with it).
+void NoteTransformType(void* query) {
+    __try{ if(query)g_transformType=*reinterpret_cast<uint16_t*>(*reinterpret_cast<uint8_t**>(query)+300); }__except(EXCEPTION_EXECUTE_HANDLER){}
+}
+uint64_t GatherHook(int64_t* list,void* query) {
+    greeneye::Lease lease;
+    const void* from=_ReturnAddress();
+    NoteTransformType(query);
+    const uint64_t result=g_gather(list,query);
+    if(!lease||!list||from!=g_despawnReturn)return result;
+    const EndList ends=CurrentEnds();
+    uint32_t added=0;
+    for(uint32_t k=0;k<ends.count;++k){
+        if(list[1]>=list[2]||!list[0])break;
+        auto* entry=reinterpret_cast<uint8_t*>(list[0])+list[1]*0x40;
+        std::memset(entry,0,0x40);
+        const auto fixed=[](float v){return int64_t(double(v)*4294967296.0);};
+        *reinterpret_cast<int64_t*>(entry+0x08)=fixed(ends.xyz[k][0]);
+        *reinterpret_cast<int64_t*>(entry+0x10)=fixed(ends.xyz[k][1]+1.0f);
+        *reinterpret_cast<int64_t*>(entry+0x18)=fixed(ends.xyz[k][2]);
+        for(int q=0;q<4;++q)*reinterpret_cast<float*>(entry+0x2c+4*q)=1.0f;
+        ++list[1];++added;
+    }
+    if(added&&!g_keptAlive.exchange(added)){
+        char line[120]{};
+        std::snprintf(line,sizeof(line),"Town Portal: creatures near %u open portal end(s) are kept as if a player stood there",added);
+        Log(line);
+    }
+    if(!added)g_keptAlive=0;
+    return result;
+}
+
+// Dev: every server entity destroyed within 150 m of an open portal end, with the way it went
+// (mode 0 queued command, 1 the tick's deferred list, 2 scene cell unload), its id (bit 31: a
+// scene entity) and where it stood: to see what removes enemies by a portal (2026-11-10).
+// FUN_1409a2a10(ecs, id, mode, flag); the entity still exists on entry. Read only.
+using DestroyFn=void(*)(uint8_t* ecs,uint32_t id,uint32_t mode,uint32_t flag);
+DestroyFn g_destroy{};
+using IndexFn=uint64_t(*)(void* table,const uint32_t* id);
+IndexFn g_entityIndex{};
+bool EntityPosition(uint8_t* ecs,uint32_t id,double out[3]) {
+    const int t=g_transformType.load();
+    if(t<0||t>=1024||!g_entityIndex)return false;
+    __try{
+        const uint64_t index=g_entityIndex(ecs+0x148,&id);
+        if(index>=*reinterpret_cast<uint64_t*>(ecs+0x158))return false;
+        auto* record=reinterpret_cast<uint8_t**>(*reinterpret_cast<uint8_t**>(ecs+0x188))[index];
+        if(!record)return false;
+        auto* arch=*reinterpret_cast<uint8_t**>(record+0x18);
+        auto* storage=*reinterpret_cast<uint8_t**>(record+0x20);
+        const uint32_t row=*reinterpret_cast<uint32_t*>(record+0x30);
+        if(!arch||!storage)return false;
+        if(!((reinterpret_cast<uint64_t*>(arch)[t>>6]>>(t&63))&1))return false;
+        auto* c=storage+size_t(row)*(*reinterpret_cast<uint16_t*>(arch+0xa84+2*t))+*reinterpret_cast<uint16_t*>(arch+0x84+2*t);
+        for(int k=0;k<3;++k)out[k]=double(reinterpret_cast<int64_t*>(c)[k])/4294967296.0;
+        return true;
+    }__except(EXCEPTION_EXECUTE_HANDLER){return false;}
+}
+// Who queued each destroy (FUN_1409602d0(commands, owner, target), the only queuer of command 1):
+// a small ring of {target, caller offset}, read back when the destroy runs.
+using QueueDestroyFn=void*(*)(void* commands,uint32_t owner,uint32_t target);
+QueueDestroyFn g_queueDestroy{};
+struct QueuedBy {std::atomic<uint32_t> target{};std::atomic<uint32_t> caller{};};
+QueuedBy g_queuedBy[256];
+std::atomic<uint32_t> g_queuedNext{};
+void* QueueDestroyHook(void* commands,uint32_t owner,uint32_t target) {
+    greeneye::Lease lease;
+    if(lease){
+        const auto base=reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+        auto& slot=g_queuedBy[g_queuedNext.fetch_add(1)&255];
+        slot.caller=uint32_t(reinterpret_cast<uintptr_t>(_ReturnAddress())-base);
+        slot.target=target;
+    }
+    return g_queueDestroy(commands,owner,target);
+}
+uint32_t QueuedCaller(uint32_t id) {
+    for(auto& slot:g_queuedBy)if(slot.target.load()==id)return slot.caller.load();
+    return 0;
+}
+
+void DestroyHook(uint8_t* ecs,uint32_t id,uint32_t mode,uint32_t flag) {
+    greeneye::Lease lease;
+    if(lease&&ecs&&ecs[8]==0){
+        double p[3];
+        if(EntityPosition(ecs,id,p)&&g_lock.try_lock()){
+            float best=1e30f;
+            {
+                std::lock_guard guard(g_lock,std::adopt_lock);
+                for(const auto& slot:g_portals){
+                    if(!slot.active)continue;
+                    for(const auto* end:{&slot.fieldEnd,&slot.baseEnd}){
+                        const float dx=end->wx-float(p[0]),dz=end->wz-float(p[2]);
+                        best=std::min(best,dx*dx+dz*dz);
+                    }
+                }
+            }
+            static uint64_t windowStart=0;static int inWindow=0;
+            const uint64_t now=GetTickCount64();
+            if(now-windowStart>5000){windowStart=now;inWindow=0;}
+            if(best<80.f*80.f||(best<150.f*150.f&&++inWindow<=25)){ // within 80 m: always
+                const auto base=reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+                char line[200]{};
+                std::snprintf(line,sizeof(line),"Town Portal (dev): destroyed %08x (%s) mode %u at %.1f, %.1f, %.1f, %.0f m from a portal end, from exe+%llx, queued by exe+%x",
+                              id,(id>>31)?"scene":"spawned",mode,p[0],p[1],p[2],std::sqrt(best),
+                              static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(_ReturnAddress())-base),QueuedCaller(id));
+                Log(line);
+            }
+        }
+    }
+    g_destroy(ecs,id,mode,flag);
+}
+
+// Areas by a portal's ends stay loaded. The server keeps 256 m scene cells loaded near players and
+// hot points (FUN_140a2b3d0; unload when every corner is over 258 m from every point). On the
+// tick a player teleports, the game's teleport system takes that player's hot point for the
+// destination, so for one tick the far end counts for nothing and a cell next to it unloads at
+// once, with the spawners in it and so the enemies they made (2026-11-10: a camp 40-80 m from the
+// portal, across a cell border). The unload request FUN_140995310(ecs, cell) is refused here for
+// a cell within 120 m of an open portal end; the cell stays loaded and wanted, and the loader
+// asks again each tick (so it unloads as usual once the portal closes). Server entities only.
+using UnloadFn=uint64_t(*)(uint8_t* ecs,uint8_t* cell);
+UnloadFn g_unload{};
+bool CellRect(uint8_t* ecs,uint8_t* cell,float& x0,float& z0) {
+    __try{
+        auto* grid=*reinterpret_cast<uint8_t**>(ecs+0x7bc028);
+        if(!grid)return false;
+        const uint32_t cols=*reinterpret_cast<uint32_t*>(grid+0x10),index=*reinterpret_cast<uint32_t*>(cell+0x30);
+        if(!cols||cols>4096)return false;
+        x0=float(index%cols)*256.f;z0=float(index/cols)*256.f;
+        return true;
+    }__except(EXCEPTION_EXECUTE_HANDLER){return false;}
+}
+uint64_t UnloadHook(uint8_t* ecs,uint8_t* cell) {
+    greeneye::Lease lease;
+    float x0=0,z0=0;
+    if(lease&&ecs&&cell&&ecs[8]==0&&CellRect(ecs,cell,x0,z0)){
+        bool keep=false;float px=0,pz=0;
+        const EndList ends=CurrentEnds();
+        for(uint32_t k=0;k<ends.count&&!keep;++k){
+            const float ex=ends.xyz[k][0],ez=ends.xyz[k][2];
+            const float dx=std::max({x0-ex,0.f,ex-(x0+256.f)});
+            const float dz=std::max({z0-ez,0.f,ez-(z0+256.f)});
+            if(dx*dx+dz*dz<120.f*120.f){keep=true;px=ex;pz=ez;}
+        }
+        if(keep){
+            static float lastX=-1,lastZ=-1;
+            if(lastX!=x0||lastZ!=z0){
+                lastX=x0;lastZ=z0;
+                char line[160]{};
+                std::snprintf(line,sizeof(line),"Town Portal: the area %.0f, %.0f stays loaded for the portal end at %.0f, %.0f",x0,z0,px,pz);
+                Log(line);
+            }
+            return 0;
+        }
+    }
+    return g_unload(ecs,cell);
+}
+
+void SetFarView(uint32_t playerId,int x,int z) {
+    if(playerId<1||playerId>16||!g_observers)return;
+    bool close=false;
+    {
+        std::lock_guard guard(g_lock);
+        for(const auto& slot:g_portals){
+            if(!slot.active)continue;
+            for(const auto* end:{&slot.fieldEnd,&slot.baseEnd}){
+                const float dx=end->wx-float(x),dz=end->wz-float(z);
+                if(dx*dx+dz*dz<60.0f*60.0f)close=true;
+            }
+        }
+    }
+    if(!close)return;
+    auto& hot=g_hot[playerId-1];
+    const uint64_t now=GetTickCount64();
+    if(hot.until.load()<=now){
+        char line[120]{};
+        std::snprintf(line,sizeof(line),"Town Portal: player %u looks through a portal; entities round %d, %d are sent to them too",playerId,x,z);
+        Log(line);
+    }
+    hot.x.store(x);hot.z.store(z);hot.until.store(now+6000);
+}
+
+// "/tpw1 ..." for the open portal with an end nearest (x, z), within 60 m; 0 when none or no
+// level is known (this process does not host).
+int FarWaterAnswer(int x, int z, char* out, size_t capacity) {
+    uint64_t best = 0; float bestDistance = 60.f * 60.f;
+    {
+        std::lock_guard guard(g_lock);
+        for (const auto& slot : g_portals) {
+            if (!slot.active) continue;
+            for (const auto* end : {&slot.fieldEnd, &slot.baseEnd}) {
+                const float dx = end->wx - float(x), dz = end->wz - float(z), d = dx * dx + dz * dz;
+                if (d < bestDistance) { bestDistance = d; best = slot.portalId; }
+            }
+        }
+    }
+    float field = -1, base = -1;
+    if (!best || !portal::water::Levels(best, field, base)) return 0;
+    auto cm = [](float m) { return m < 0 ? -100 : int(m * 100.f + 0.5f); };
+    return std::snprintf(out, capacity, "/tpw1 %llu %d %d", static_cast<unsigned long long>(best), cm(field), cm(base));
+}
+
 // 0: ordinary chat, 1: replace on host, 2: consume on client/host.
 int HandleProtocolChat(void* store, uint8_t type, uint64_t* text, uint32_t senderHandle,
                        uint64_t account, char* answer, size_t capacity) {
@@ -875,6 +1177,31 @@ int HandleProtocolChat(void* store, uint8_t type, uint64_t* text, uint32_t sende
     if(line.starts_with("/tpi1 ")||line.starts_with("/tpi2 ")){
         if(isClientStore)sharing::Control(account,line);
         return isClientStore?2:0;
+    }
+
+    if (line.starts_with("/tpv1 ")) {
+        if (!isClientStore) {
+            char text[64]{};
+            std::memcpy(text, line.data() + 6, std::min<size_t>(line.size() - 6, sizeof(text) - 1));
+            unsigned id = 0; int x = 0, z = 0;
+            if (std::sscanf(text, "%u %d %d", &id, &x, &z) == 3) {
+                SetFarView(id, x, z);
+                // The answer, relayed to everyone: how high the water stands at that portal's ends.
+                if (int n = FarWaterAnswer(x, z, answer, capacity); n > 0 && size_t(n) < capacity) return 1;
+            }
+        }
+        return 2;
+    }
+    // "/tpw1 <portalId> <field cm> <base cm>": water at a portal's ends (-100: dry), from the host.
+    if (line.starts_with("/tpw1 ")) {
+        if (isClientStore && line.size() < 80) {
+            char text[80]{};
+            std::memcpy(text, line.data() + 6, line.size() - 6);
+            unsigned long long id = 0; int field = 0, base = 0;
+            if (std::sscanf(text, "%llu %d %d", &id, &field, &base) == 3)
+                portal::water::SetHeardLevels(id, field < 0 ? -1.f : field * 0.01f, base < 0 ? -1.f : base * 0.01f);
+        }
+        return 2;
     }
 
     if (line == kHelloReply) {
@@ -1135,6 +1462,18 @@ uint64_t LocalSteamAccount() {
     return 0x7072746c00000001ull;
 }
 
+// Open portals carried over a hot reload (the loader keeps this block): saved when the old
+// generation is told to stop, taken back by the next one within ten seconds.
+struct KeptPortals {
+    uint64_t savedTick;
+    uint32_t size;
+    PortalInstance portals[kMaxPortals];
+};
+KeptPortals* KeptPortalBlock() {
+    auto* host = greeneye::Host();
+    return host ? static_cast<KeptPortals*>(host->keep("town-portal-open-portals-v1", sizeof(KeptPortals))) : nullptr;
+}
+
 bool Init(const GreeneyeHost* host) {
     auto* p = host->find(kPlayerPattern, nullptr);
     auto* a = host->find(kApplyPattern, nullptr);
@@ -1178,6 +1517,45 @@ bool Init(const GreeneyeHost* host) {
     g_append = reinterpret_cast<AppendFn>(host->hook(chat, reinterpret_cast<void*>(AppendHook), 13, nullptr, 0));
     g_groundQuery = reinterpret_cast<GroundQueryFn>(host->hook(ground, reinterpret_cast<void*>(GroundHook), 13, nullptr, 0));
 
+    // Optional (far creatures in a portal's live view): where the server lists its observers.
+    // 15 bytes: a stack copy and three saves through it, no relative operands.
+    if (auto* observers = host->find("48 8B C4 48 89 58 08 48 89 70 10 48 89 78 18 4C 89 60 20 41 55 41 56 41 57 48 81 EC 60 01 00 00 4C 8B 2A 45 0F B6 E0", nullptr))
+        g_observers = reinterpret_cast<ObserversFn>(host->hook(observers, reinterpret_cast<void*>(ObserversHook), 15, nullptr, 0));
+    Log(g_observers ? "Town Portal: far creatures: the host can send a portal's far side" : "Town Portal: far creatures: observer list not found");
+    // Optional: creatures by a portal's ends are not despawned (GatherHook). The call to the
+    // gatherer sits at +0x6b in conditional_despawn; the gatherer's first 15 bytes are three
+    // saves through rsp (no relative operands).
+    {
+        auto* despawn=static_cast<const uint8_t*>(host->find("40 55 41 56 48 8D AC 24 B8 FB FF FF 48 81 EC 48 05 00 00",nullptr));
+        auto* gather=host->find("48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57 41 56 41 57 48 83 EC 20 48 8B 02 4C 8D 92 88 01 00 00",nullptr);
+        uint8_t op=0;
+        if(despawn)host->read(const_cast<uint8_t*>(despawn)+0x6b,&op,1);
+        if(despawn&&gather&&op==0xE8){
+            g_despawnReturn=despawn+0x70;
+            g_gather=reinterpret_cast<GatherFn>(host->hook(gather,reinterpret_cast<void*>(GatherHook),15,nullptr,0));
+        }
+        Log(g_gather?"Town Portal: creatures near open portals are kept":"Town Portal: creature despawn check not found; creatures near portals are not kept");
+    }
+    // Optional: areas next to a portal's ends are not unloaded (UnloadHook). 14 bytes: a save
+    // through rsp, push, sub and a compare whose flags the trampoline's jump back keeps.
+    if(auto* unload=host->find("48 89 5C 24 10 56 48 83 EC 30 80 7A 01 00",nullptr))
+        g_unload=reinterpret_cast<UnloadFn>(host->hook(unload,reinterpret_cast<void*>(UnloadHook),14,nullptr,0));
+    Log(g_unload?"Town Portal: areas next to open portals stay loaded":"Town Portal: area unload not found; areas next to portals may unload");
+#ifdef TOWN_PORTAL_DEV
+    if(auto* destroy=static_cast<uint8_t*>(host->find("48 89 5C 24 18 48 89 74 24 20 89 54 24 10 55 57 41 55",nullptr))){
+        uint8_t call[5]{};host->read(destroy+0x45,call,5);
+        if(call[0]==0xE8){
+            int32_t rel;std::memcpy(&rel,call+1,4);
+            g_entityIndex=reinterpret_cast<IndexFn>(destroy+0x4a+rel);
+            g_destroy=reinterpret_cast<DestroyFn>(host->hook(destroy,reinterpret_cast<void*>(DestroyHook),14,nullptr,0));
+        }
+    }
+    if(auto* queue=host->find("40 53 48 83 EC 30 41 8B D8 8B C2 45 85 C0 74 ?? 48 8D 51 10 89 44 24 20 41 B9 10 00 00 00 41 B0 01",nullptr))
+        g_queueDestroy=reinterpret_cast<QueueDestroyFn>(host->hook(queue,reinterpret_cast<void*>(QueueDestroyHook),14,nullptr,0));
+    Log(g_queueDestroy?"Town Portal (dev): logging who queues destroys":"Town Portal (dev): destroy queue not found");
+    Log(g_destroy?"Town Portal (dev): logging entities destroyed near portals":"Town Portal (dev): entity destroy not found");
+#endif
+
     bool ok = g_playerFirst && g_playerMore && g_applyFirst && g_applyMore &&
               g_receive && g_append && g_groundQuery;
 
@@ -1185,6 +1563,17 @@ bool Init(const GreeneyeHost* host) {
     // native travel action (cast animation, teleport effect) is kept but switched off, so its
     // travel-gate hook is not installed.
     g_nativeTravel = false;
+    if (auto* kept = KeptPortalBlock(); kept && kept->size == sizeof(KeptPortals) && kept->savedTick &&
+        GetTickCount64() - kept->savedTick < 10000) {
+        std::lock_guard guard(g_lock);
+        const uint64_t now = GetTickCount64();
+        std::memcpy(g_portals, kept->portals, sizeof(kept->portals));
+        // Heard of just now, so a friend's portal is not closed as silent before its next sync.
+        for (auto& slot : g_portals)
+            if (slot.active) slot.lastSyncTick = now;
+        kept->savedTick = 0;
+        Log("Town Portal: open portals kept through the reload");
+    }
     Log(ok ? "Town Portal: portal travel moves the player once destination terrain has loaded"
            : "Town Portal: host travel hooks unavailable");
     g_paused = !ok;
@@ -1207,6 +1596,7 @@ void SetClient(void* gameClient) {
     }
 }
 
+void RequestFarView(uint32_t playerId, float x, float z) { SetFarView(playerId, int(x), int(z)); }
 bool HostsWorld() {
     std::lock_guard guard(g_lock);
     return g_hostWorld.storage && GetTickCount64() - g_hostWorld.seen <= 2000;
@@ -1521,6 +1911,11 @@ bool Prepare() {
     std::lock_guard guard(g_lock);
     for (const auto& p : g_requests) {
         if (p.stage != Stage::none) return false;
+    }
+    if (auto* kept = KeptPortalBlock()) {
+        kept->size = sizeof(KeptPortals);
+        std::memcpy(kept->portals, g_portals, sizeof(kept->portals));
+        kept->savedTick = GetTickCount64();
     }
     return true;
 }

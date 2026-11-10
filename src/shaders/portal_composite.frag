@@ -21,7 +21,24 @@ layout(location=10) flat in vec4 snapRows[3];
 layout(location=13) flat in vec4 snap;
 // The cast effect: the caster's hand in portal metres (xyz), effect 1-3 (w; 0 none).
 layout(location=14) flat in vec4 castInfo;
+// Motion pass (options.x +1000, see the vertex shader).
+layout(location=15) flat in vec4 prevRows[3];
+layout(location=18) flat in vec3 motionJitter;
 layout(location=0) out vec4 color;
+// Where the view through the portal was found (Window): the point in window space, and the
+// side the viewer stands on.
+// The picture's brightness, and how wavy it is shown (snap.y, see main): a picture that is not
+// the live view yet is seen as through moving water, and the live view settles out of that.
+// snap.w without the inner-portal mark (+4: a portal drawn inside another portal's view).
+float gSw=0.0;
+bool gInner=false;
+float gBright=1.0;
+bool gBlank=false; // waiting with no picture of the place: a soft turbulence (snap.y -5)
+float gWave=0.0;
+vec3 gWindowPoint=vec3(0);
+float gWindowSide=1.0;
+// The ray Window traced, in window space: E + D*t, D.z 1 (t counts metres along the exit's normal).
+vec3 gRayE=vec3(0),gRayD=vec3(0,0,1);
 // The lighter portal for low graphics settings (options.x +100, portal_quality.h): the picture
 // traced in fewer depth steps, the steam marched in fewer, fewer embers.
 bool gLight=false;
@@ -87,6 +104,45 @@ vec3 SnapshotColor(vec2 uv,float depth) {
 // portal links them (turned about up), traced through the snapshot's depth until it passes
 // behind a surface. Moving the head shifts near things more than far ones, like a window.
 // eye and point are in portal space (metres); returns colour and how much of it to show.
+// The live frame at uv, averaged over the screen pixel's footprint in it. The frame has more
+// pixels than the portal covers on screen from afar; one smooth sample per screen pixel then
+// skips most of them and the picture crawls as the frame is re-aimed (2026-11-09).
+vec3 LiveColor(vec2 uv) {
+    vec2 size=vec2(textureSize(sampler2D(destination,imageSampler),0));
+    vec2 texel=vec2(0.5)/size;
+    // The footprint of a shown pixel, not of a rendered one (gSw's fraction, see
+    // CompositeCoordinates): the upscaler gathers the finer detail over frames.
+    float fraction=gSw-2.0;
+    float fine=clamp((fraction-(fraction>=0.5?0.5:0.0))/0.45,0.25,1.0);
+    vec2 dx=dFdx(uv)*fine,dy=dFdy(uv)*fine;
+    float span=max(length(dx*size),length(dy*size));
+    if(!(span<1e6)) {span=1.0;dx=vec2(0);dy=vec2(0);}
+    float keep=min(1.0,6.0/max(span,1e-6));       // an outline between two rays: not across it all
+    dx*=keep;dy*=keep;
+    int n=int(clamp(ceil(span*keep*0.75),1.0,4.0));
+    vec3 sum=vec3(0);
+    for(int i=0;i<n;++i) for(int j=0;j<n;++j) {
+        vec2 o=((float(i)+0.5)/float(n)-0.5)*dx+((float(j)+0.5)/float(n)-0.5)*dy;
+        sum+=textureLod(sampler2D(destination,imageSampler),clamp(uv+o,texel,1.0-texel),0.0).rgb;
+    }
+    vec3 colour=sum/float(n*n);
+    // Where the frame is shown about one to one or enlarged, give back some of the edge
+    // contrast its anti-aliasing and this resampling took: the pixel against the mean of its
+    // four neighbours in the frame, limited so bright sparks do not ring. Without it the far
+    // side stayed a little soft next to the player's own view (2026-11-09).
+    if(n==1) {
+        vec2 t=1.0/size;
+        vec3 around=(textureLod(sampler2D(destination,imageSampler),clamp(uv+vec2(t.x,0.0),texel,1.0-texel),0.0).rgb+
+                     textureLod(sampler2D(destination,imageSampler),clamp(uv-vec2(t.x,0.0),texel,1.0-texel),0.0).rgb+
+                     textureLod(sampler2D(destination,imageSampler),clamp(uv+vec2(0.0,t.y),texel,1.0-texel),0.0).rgb+
+                     textureLod(sampler2D(destination,imageSampler),clamp(uv-vec2(0.0,t.y),texel,1.0-texel),0.0).rgb)*0.25;
+        vec3 edge=colour-around;
+        vec3 limit=0.35*max(colour,around)+0.01;
+        colour=max(colour+0.7*clamp(edge,-limit,limit),vec3(0.0));
+    }
+    return colour;
+}
+
 vec4 Window(vec3 eye,vec3 point) {
     // Viewed from behind, the same view turned round.
     float side=eye.z>=0.0?-1.0:1.0;
@@ -94,28 +150,57 @@ vec4 Window(vec3 eye,vec3 point) {
     vec3 D=vec3(side*point.x,point.y,side*point.z-snap.x)-eyeOut;
     if(D.z<1e-4) return vec4(0);
     D/=D.z;
+    gWindowSide=side;
     // Where the snapshot camera stood, in window space: the point with clip x, y, w all zero.
     mat3 M=transpose(mat3(snapRows[0].xyz,snapRows[1].xyz,snapRows[2].xyz));
     vec3 camera=-inverse(M)*vec3(snapRows[0].w,snapRows[1].w,snapRows[2].w);
     // Parallax: rays start from the viewer's eye carried through the portal, pulled most of the
     // way back to the snapshot camera. Near things still shift as the head moves, but rays seldom
     // pass behind what the camera could see (which smears the nearer surface along them).
-    const float kParallax=0.1;
+    // A live frame (gSw 2) was taken from the viewer's own eye carried through the portal a
+    // moment ago: trace from where the eye is now, starting at the portal's plane.
+    bool liveFrame=gSw>1.5;
+    float kParallax=liveFrame?(gSw-2.0>=0.5?1.0:0.0):0.1;
     vec3 E=mix(camera,eyeOut,kParallax);
+    gRayE=E;gRayD=D;
     // Each sample proposes a camera-depth plane. Intersect the ray with that
     // plane, then check its actual pixel; sampling only when already behind
     // depth skips narrow tips between steps and mistakes silhouette jumps for
     // continuous surfaces. Keep the nearest validated candidate, not the first
     // background plane encountered in the photograph.
     const int kSteps=gLight?14:48;
-    const float kNear=0.3, kFar=400.0;
+    float kNear=0.3;
+    const float kFar=400.0;
+    // D.z is 1: the distance along the ray counts metres along the exit's normal from the eye.
+    if(liveFrame) kNear=max(0.3,-snap.x-eyeOut.z);
     float ratio=pow(kFar/kNear,1.0/float(kSteps));
     float distance=kNear, nearest=kFar+1.0;
+    gWindowPoint=E+D*kFar;
     float ew=dot(snapRows[2],vec4(E,1.0));
     float dw=dot(snapRows[2].xyz,D);
     if(dw<=1e-6)return vec4(0);
     vec2 uv=vec2(0);
     bool inside=false,hit=false;
+    // A live frame was taken from the viewer's eye a moment ago, so each ray is very nearly one
+    // point of the frame: start there and follow the frame's depth a few times to where the
+    // ray from the eye as it is now meets it (the same point while the viewer stands still).
+    // No search by depth: that decides pixel by pixel whether it found a surface, and along
+    // outlines (leaves against the sky) the answer changed from frame to frame, which
+    // flickered (2026-11-09).
+    if(liveFrame) {
+        vec2 u;float w;
+        if(SnapshotUv(E+D*kFar,u,w)) {
+            float t=kFar;bool held=true;
+            for(int k=0;k<3&&held;++k) {
+                t=clamp((SnapshotDepth(u)-ew)/dw,kNear,kFar);
+                held=SnapshotUv(E+D*t,u,w);
+            }
+            if(held) {
+                gWindowPoint=E+D*t;
+                return vec4(LiveColor(u)*gBright,1.0);
+            }
+        }
+    }
     for(int i=0;i<=kSteps;++i) {
         vec2 u;float w;
         if(SnapshotUv(E+D*distance,u,w)) {
@@ -141,7 +226,15 @@ vec4 Window(vec3 eye,vec3 point) {
         distance*=ratio;
     }
     vec2 texel=vec2(0.5)/vec2(textureSize(sampler2D(destination,imageSampler),0));
-    if(hit) return vec4(SnapshotColor(clamp(uv,texel,1.0-texel),SnapshotDepth(uv))*snap.y,1.0);
+    if(hit) {
+        gWindowPoint=E+D*nearest;
+        // A live frame is seen from almost where it was taken: plain smooth sampling. The
+        // depth-matched filter is for an old snapshot seen from elsewhere (it keeps outlines from
+        // bleeding); on ground and far land at a shallow angle no neighbour matches, and it
+        // fell back to single texels, in streaks (2026-11-09).
+        if(liveFrame) return vec4(textureLod(sampler2D(destination,imageSampler),clamp(uv,texel,1.0-texel),0.0).rgb*gBright,1.0);
+        return vec4(SnapshotColor(clamp(uv,texel,1.0-texel),SnapshotDepth(uv))*gBright,1.0);
+    }
     // No surface: where the ray heads (far away). Inside the picture that is sky or distant
     // land. Outside it (ground just past the exit, which the snapshot camera stood beyond, or
     // above or beside its frame) the nearest stretch of the picture's edge, blurred along the
@@ -154,7 +247,7 @@ vec4 Window(vec3 eye,vec3 point) {
     if(outside<=0.0) {
         vec2 distant=vec2(0.5+0.5*n.x,0.5-0.5*n.y);
         float blocker=SnapshotDepth(distant);
-        if(blocker>=clip.z) return vec4(SnapshotColor(distant,blocker)*snap.y,1.0);
+        if(blocker>=clip.z) return vec4(SnapshotColor(distant,blocker)*gBright,1.0);
         // This part of the background was hidden by a closer object in the
         // snapshot. Pasting its unshifted colour here draws the object twice.
         // Extend nearby BACKGROUND along the reprojection direction instead;
@@ -169,7 +262,7 @@ vec4 Window(vec3 eye,vec3 point) {
                 if(any(lessThan(candidate,texel))||any(greaterThan(candidate,1.0-texel)))break;
                 float behind=SnapshotDepth(candidate);
                 if(behind>blocker+max(0.1,blocker*0.05)) {
-                    return vec4(SnapshotColor(candidate,behind)*snap.y,1.0);
+                    return vec4(SnapshotColor(candidate,behind)*gBright,1.0);
                 }
             }
         }
@@ -189,7 +282,32 @@ vec4 Window(vec3 eye,vec3 point) {
         }
     }
     rgb/=26.0;
-    return vec4(rgb*snap.y*(1.0-0.5*smoothstep(0.0,1.0,outside)),0.85*(1.0-smoothstep(0.0,0.6,outside)));
+    return vec4(rgb*gBright*(1.0-0.5*smoothstep(0.0,1.0,outside)),0.85*(1.0-smoothstep(0.0,0.6,outside)));
+}
+
+// The far end stands in water up to `level` (window space, metres above its centre). The far
+// camera stands in air at the viewer's eye height, and what lies between it and the exit is cut
+// away (the near plane is moved out to the exit), so the far picture shows what is under the
+// water as if in air: clear rock below a band of surface (2026-11-10). Where a ray leaves the
+// exit below the water line it travels through water to what it hits, or up to the surface:
+// that stretch dims it and fills it with the water's own murky green, more the longer it is.
+vec3 Underwater(vec3 colour,float level) {
+    float t0=-snap.x-gRayE.z;
+    float y0=gRayE.y+gRayD.y*t0;
+    if(y0>=level) return colour;
+    float t1=max(gWindowPoint.z-gRayE.z,t0);
+    if(gRayD.y>1e-5) t1=min(t1,t0+(level-y0)/gRayD.y);
+    float metres=(t1-t0)*length(gRayD);
+    // How bright the far side is: a few taps over the frame (the water takes on its light).
+    float ambient=0.0;
+    for(int i=0;i<3;++i) for(int j=0;j<2;++j)
+        ambient+=dot(textureLod(sampler2D(destination,imageSampler),vec2(0.2+0.3*float(i),0.15+0.3*float(j)),0.0).rgb,vec3(0.2126,0.7152,0.0722));
+    ambient*=gBright/6.0;
+    vec3 through=exp(-metres*vec3(0.34,0.12,0.14));
+    vec3 murk=vec3(0.16,0.42,0.38)*ambient*0.45;
+    // Just under the line the change is softened over 5 cm, not a hard edge.
+    float under=smoothstep(0.0,0.05,level-y0);
+    return mix(colour,colour*through+murk*(1.0-through),under);
 }
 
 // The spell from the caster's hand to the forming portal, drawn in the game's frame (hidden
@@ -398,7 +516,27 @@ void main() {
     // later ones blend and discard there so they do not erase the earlier portal.
     // +40: in the game's frame, the portal's light alone, drawn as a multiply of the
     // scene's colour (scene * (1 + light)) before the surface. +100: the lighter portal.
+    // snap.y: the brightness; negative for a wavy picture: below -10 a waiting picture (its
+    // brightness is the rest), else the live view settling (1 + the value = how wavy still).
+    gSw=snap.w;gInner=gSw>5.0;if(gInner)gSw-=4.0;
+    gBright=snap.y;gWave=0.0;
+    if(snap.y<0.0) {
+        float y=-snap.y;
+        if(y>=10.0) {gBright=y-10.0;gWave=1.0;}
+        else if(y>=4.0) {gBright=1.0;gBlank=true;}
+        else {gBright=1.0;gWave=clamp(1.0-y,0.0,1.0);}
+    }
     float encoded=options.x;
+    // +2000: the depth pass. The lens writes its own depth into the game's scene depth, so
+    // what the game draws by depth after the portal (its sky, where nothing solid is) leaves
+    // the view through the portal alone. No colour; the scene depth is not sampled (it is
+    // this pass's target), the depth test does the covering.
+    gl_FragDepth=gl_FragCoord.z;
+    // +3000: the lens's depth written as a colour (the game's water keeps the scene's depth in
+    // an image of its own, which this goes into), where nothing nearer stands in front.
+    bool depthColour=encoded>2999.5; if(depthColour) encoded-=3000.0;
+    bool depthPass=encoded>1999.5; if(depthPass) encoded-=2000.0;
+    bool motion=encoded>999.5; if(motion) encoded-=1000.0;
     gLight=encoded>99.5; if(gLight) encoded-=100.0;
     bool lightOnly=encoded>39.5; if(lightOnly) encoded-=40.0;
     bool overlay=encoded>19.5; if(overlay) encoded-=20.0;
@@ -466,7 +604,7 @@ void main() {
         // Multiplication preserves the ground's texture, but the old gain was
         // too weak on moonlit grass. The light-only draw supplies its tunable
         // gain in snap.y; the surface draw keeps normal snapshot exposure there.
-        float groundGain=lightOnly?snap.y:1.25;
+        float groundGain=lightOnly?gBright:1.25;
         light+=tint*groundGain*groundPool*groundHeight*groundFacing*grow;
     }
     if(lightOnly) {
@@ -497,7 +635,7 @@ void main() {
     }
     vec4 surface=vec4(0);
     vec3 window=vec3(0);                          // premultiplied, added after the colour scale
-    float cover=hit>0.0?Visible(hit,depthUv):0.0;
+    float cover=hit>0.0?(depthPass?1.0:Visible(hit,depthUv)):0.0;
     if(cover>0.0) {
         vec3 p=AT(hit);
         // Toward the camera: depth increases along the ray toward it.
@@ -510,17 +648,33 @@ void main() {
         float flow=0.5+0.5*sin(radius*22.0-angle*3.0-t*2.0+0.65*sin(angle*6.0+t));
         float strands=pow(0.5+0.5*sin(angle*5.0+t-radius*29.0),8.0)*radius*radius*radius;
         vec3 interior=tint*(0.16+0.28*flow+0.2*strands);
+        if(gBlank) {
+            // Slow, soft clouds drifting in the opening, a little of the portal's colour.
+            vec3 q=vec3(uv*1.6,t*0.18);
+            float n1=Fbm(q+vec3(0.0,t*0.05,0.0)),n2=Fbm(q*1.9+vec3(4.3,-t*0.07,1.7));
+            float n=0.55*n1+0.45*n2;
+            interior=mix(vec3(0.035,0.045,0.06),tint*0.30+vec3(0.06,0.07,0.09),smoothstep(0.25,0.85,n));
+            interior*=0.85+0.15*sin(radius*5.0-t*0.8);
+        }
         if(live) interior=texture(sampler2D(destination,imageSampler),screen).rgb;
         // The other side through the lens, once it has formed; the swirl stays as a faint
         // film over it and the rim stays energy.
         float see=0.0;vec3 view=vec3(0);
         if(hdr&&snap.z>0.5&&abs(B.w)>1e-9) {
-            vec4 w=Window(B.xyz/B.w*kMetres,p);
+            vec3 pw=p;
+            if(gWave>0.001) {
+                vec2 q=p.xy;
+                pw.xy+=gWave*vec2(0.085*sin(q.y*4.6+t*1.9)+0.045*sin(q.y*9.7-t*2.7+q.x*2.0),
+                                  0.070*sin(q.x*5.3+t*1.5)+0.040*sin(q.x*11.0+t*2.3+q.y*1.7));
+            }
+            vec4 w=Window(B.xyz/B.w*kMetres,pw);
+            if(castInfo.w<-0.5&&w.a>0.0) w.rgb=Underwater(w.rgb,castInfo.x);
+            if(gWave>0.001) w.rgb=mix(w.rgb,w.rgb*vec3(0.72,0.88,1.0)*(0.92+0.08*sin(p.y*7.0+t*2.1)),0.6*gWave);
             see=w.a*smoothstep(0.55,1.0,form)*(1.0-smoothstep(0.78,0.95,radius));
             view=w.rgb;
             // Taken in the Shroud: the game's dark blue grade for it comes after the snapshot,
             // so give it a similar one here (seen from the Shroud the game grades it anyway).
-            if(snap.w>0.5) {
+            if(gSw>0.5&&gSw<1.5) {
                 float luma=dot(view,vec3(0.2126,0.7152,0.0722));
                 view=mix(vec3(luma),view,0.35)*vec3(0.42,0.58,0.85)*0.55;
             }
@@ -534,7 +688,19 @@ void main() {
                 float level=max(dot(view,vec3(0.2126,0.7152,0.0722))*1.6,0.12);
                 view=mix(view,vec3(n*scan*level),snowAmount);
             }
-            interior*=1.0-0.85*see;
+            // A live view is clear glass; a snapshot keeps a faint film of the swirl over it.
+            // A live view with nothing to show along this ray (the far camera does not look that
+            // way: a portal seen inside another portal's view, or the edge of a fast turn): a dark
+            // mist, not the bright swirl (rings of it stood nested in the inner portal, 2026-11-10).
+            // A portal inside another portal's view with no picture along this ray: the far
+            // frame itself, fitted to the lens (a picture in a picture: not the true angle, but a
+            // view where a dark hole stood). Elsewhere the dark mist.
+            if(gInner&&gSw>1.5&&w.a<0.5) {
+                vec2 fit=clamp(vec2(0.5+0.47*uv.x/max(s,0.01),0.5-0.47*uv.y/max(s,0.01)),0.01,0.99);
+                w=vec4(textureLod(sampler2D(destination,imageSampler),fit,0.0).rgb*gBright*0.85,1.0);
+            }
+            if(gSw>1.5) interior*=mix(1.0,0.07,(1.0-w.a)*smoothstep(0.55,1.0,form));
+            interior*=1.0-(gSw>1.5?1.0:0.85)*see;
         }
         // Rim where the lens curves away from the viewer; it flares while forming.
         float edge=1.0-facing;
@@ -545,7 +711,32 @@ void main() {
         float alpha=(1.0-smoothstep(0.985,1.0,edge))*cover;
         surface=vec4((interior+rim)*alpha,alpha);
         window=view*see*alpha;
+        // Motion pass: where the point seen through the portal was on screen a frame ago, as if
+        // it stood behind the portal: the game's anti-aliasing and upscaling then follow the
+        // view, not the wall the portal stands in front of (which left echoes of it).
+        if(depthColour) {
+            if(alpha<0.5||cover<0.5) discard;
+            color=vec4(clamp(hit,0.0,1.0),0.0,0.0,1.0);
+            return;
+        }
+        if(depthPass) {
+            if(alpha<0.5) discard;
+            gl_FragDepth=clamp(hit,0.0,1.0);
+            color=vec4(0.0);
+            return;
+        }
+        if(motion) {
+            if(see*alpha<0.5) discard;
+            vec3 h=gWindowPoint;
+            vec3 at=vec3(gWindowSide*h.x,h.y,gWindowSide*(h.z+snap.x));
+            vec3 before=vec3(dot(prevRows[0],vec4(at,1.0)),dot(prevRows[1],vec4(at,1.0)),dot(prevRows[2],vec4(at,1.0)));
+            if(before.z<=0.01) discard;
+            vec2 moved=(before.xy/before.z-(ndc-motionJitter.xy))*vec2(0.5,-0.5)*motionJitter.z;
+            color=vec4(clamp(moved,vec2(-1.0),vec2(1.0)),0.0,1.0);
+            return;
+        }
     }
+    if(motion||depthPass||depthColour) discard;
 
     // Effects on the portal plane, faded as it turns edge-on: a soft halo just
     // outside the rim, and while the portal forms a ring of sparks traced
@@ -591,6 +782,11 @@ void main() {
         vec3 eye=B.xyz/B.w*kMetres;
         vec3 ray=normalize(AT(0.05)-eye);
         float sceneT=solid?length(p-eye):1e9;
+        // Through the lens the steam ends at the lens: what is behind the portal's plane is
+        // not seen through it. (Marched on to the scene behind, the steam was thinner over
+        // a stone standing behind the portal than over the sky, and the stone showed through
+        // the far view as a dark shape, 2026-11-10.)
+        if(hit>0.0&&cover>0.0) sceneT=min(sceneT,length(AT(hit)-eye));
         spell+=PortalAura(eye,ray,sceneT,t,smoothstep(0.6,1.0,form));
     }
     if(surface.a+sparks+halo<0.002) {
