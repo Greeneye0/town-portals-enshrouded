@@ -21,6 +21,9 @@
 #include "portal_colors.h"
 #include "portal_terrain_policy.h"
 #include <intrin.h>
+#include <dxgi.h>
+#include <shlobj.h>
+#pragma comment(lib,"dxgi.lib")
 #include "portal_native_signatures.h"
 
 namespace portal::sceneprobe {
@@ -67,7 +70,7 @@ struct EffectRecord {uint32_t source,owned;};
 struct EffectState {EffectRecord records[kEffects];uint32_t count,created,removed,refused;};
 EffectState* g_effects{};
 // Animated things mirrored into the second camera's scene (SyncOwnedActors).
-constexpr uint32_t kActorParts=24,kActors=40;
+constexpr uint32_t kActorParts=24,kActors=96; // 40 until 2.0.1: a base with many residents filled it and the player was not twinned (user, 2026-11-10)
 struct ActorPart {uint32_t source,owned;uint8_t transform[56];};
 struct ActorRecord {uint32_t sourceGroup,ownedGroup,parts,pad;uint64_t guid[2];ActorPart part[kActorParts];};
 thread_local bool g_inPlayerRender{}; // set while the player's own view is rendered (RenderHook)
@@ -154,6 +157,22 @@ bool g_liveField2{},g_nowField{};
 uint64_t g_liveSecondTick{};
 bool g_liveAlternating{},g_liveNoStore{};
 uint64_t g_liveUntil{},g_liveSelectTick{},g_renderedPortal{},g_mappedFrames{};
+// FarShot: once an end has been live and settled for a while, the second camera holds the
+// snapshot camera's pose there for a few frames (the departure snapshot's: 0.4 m out from the
+// far end, looking out through it, 110 degrees wide) and the last of them is stored as that
+// end's parallax picture, refreshed every couple of minutes it is live. Ends that are not live
+// then show that picture plainly instead of a held live frame, which, shot from the viewer's eye
+// through a narrow aimed lens, came apart in shreds seen from anywhere else (user's two-player
+// screenshot, 2026-11-10). Render thread.
+struct FarShot {
+    bool active{},captureNow{};uint64_t portalId{};bool field{};PortalInstance portal{};uint64_t startedAt{};
+    PortalEndpoint end{};uint32_t frames{};uint8_t pose[0x28]{};
+};
+FarShot g_farShot;
+struct FarShotDone {uint64_t portalId{};bool field{};float x{},z{};uint64_t tick{};};
+FarShotDone g_farShotsDone[16];
+constexpr float kFarShotDistance=0.4f;     // as a departure snapshot through a field end
+constexpr uint32_t kFarShotFrames=4;       // the frame a render gives is for the call before
 uint64_t g_displayProbeUntil{};
 std::array<uint8_t,0x28> g_probePose{};
 bool g_probePoseValid{};
@@ -300,8 +319,11 @@ const Snapshot* LiveSnapshot(const PortalInstance& p,bool field,uint64_t now) {
     // (2026-11-10, later: not wanted after all. A picture that is no longer live is not shown:
     // the swirl, then the live view fades in again. tools/live.keep, dev, holds it as above.)
     // (Later again: held after all, shown wavy as a picture that is waiting. tools/live.nokeep.)
-    static uint64_t checked=0;static bool nokeep=false;
-    if(now-checked>1000){checked=now;nokeep=GetFileAttributesW(L"C:/Mods/Enshrouded/TownPortal/tools/live.nokeep")!=INVALID_FILE_ATTRIBUTES;}
+    // (2.0.1: not held. A live frame is shot from the viewer's eye through a narrow aimed lens,
+    // and held as a still it showed in shreds from anywhere else; the end's parallax snapshot,
+    // taken from the live camera itself (FarShot), shows instead. tools/live.keep, dev, holds it.)
+    static uint64_t checked=0;static bool nokeep=true;
+    if(now-checked>1000){checked=now;nokeep=GetFileAttributesW(L"C:/Mods/Enshrouded/TownPortal/tools/live.keep")==INVALID_FILE_ATTRIBUTES;}
     for(const LiveView* l:{&g_liveView,&g_liveView2})
         if(l->snapshot.valid&&l->ready&&l->portalId==p.portalId&&l->field==field&&now-std::min(now,l->snapshot.tick)<=(nokeep?400u:600000u))return &l->snapshot;
     return nullptr;
@@ -311,6 +333,8 @@ const Snapshot* LiveSnapshot(const PortalInstance& p,bool field,uint64_t now) {
 // earlier capture) are not put up in between: going from one of those to the live view was a
 // jolt (user, 2026-11-10). tools/live.stills (dev) shows them as before.
 bool LiveAuto(uint64_t now);
+extern std::atomic<bool> g_liveUnavailable; // portal_scene_probe.cpp LiveRoom
+std::atomic<bool> g_liveUnavailable{false};
 int LiveViewSetting();
 bool LiveOnly(uint64_t now) {
     static uint64_t checked=0;static bool stills=false;
@@ -318,6 +342,11 @@ bool LiveOnly(uint64_t now) {
     // Whenever the live view is on at all (not only once a portal has asked for it: its first
     // frames showed the default picture plain, user 2026-11-10).
     return !stills&&LiveAuto(now)&&g_target&&!g_target->error;
+}
+bool LiveWaiting(const PortalInstance& p,bool field,uint64_t now) {
+    if(!LiveOnly(now)||!g_livePortal.active||g_livePortal.portalId!=p.portalId||g_liveField!=field)return false;
+    if(now>g_liveUntil+1000)return false; // not asked for just now
+    return !(g_liveView.ready&&g_liveView.portalId==p.portalId&&g_liveView.field==field);
 }
 float LiveFade(const Snapshot* s,uint64_t now) {
     LiveView* l=s==&g_liveView.snapshot?&g_liveView:s==&g_liveView2.snapshot?&g_liveView2:nullptr;
@@ -329,6 +358,9 @@ float LiveFade(const Snapshot* s,uint64_t now) {
     last=now;
     const float t=std::clamp(float(now-std::min(now,l->shownSince))/800.f,0.f,1.f);
     return t*t*(3.f-2.f*t);
+}
+const Snapshot* InnerPicture() {
+    return g_liveNow&&g_liveNow->snapshot.valid?&g_liveNow->snapshot:nullptr;
 }
 bool IsLiveSnapshot(const Snapshot* s) {
     if(s!=&g_liveView.snapshot&&s!=&g_liveView2.snapshot)return false;
@@ -923,6 +955,26 @@ void* FogAtlasHook(void* atlas,uint8_t* description) {
     }
     return g_fogAtlas(atlas,description);
 }
+// The game's task queues: ONE pool for every scene, the server inside a hosted game and more,
+// sized by the task system's description (+0x20, the hard-coded 32 the app's start-up passes
+// to FUN_1408ea720(allocator, description), which allocates the pool with that many slots;
+// nothing else assumes 32: static RE 2026-11-10, C:/temp/enshrouded-re/queue-q*-out.txt). On a
+// world the player hosts only 3 were free, the second camera needs 5 (scene, water, world
+// attach), and squeezing it in crashed the graphics card. Made 48 here at the game's start
+// (about 8 KB more); LiveRoom still asks for 5 free. Takes effect only in a game started with
+// the mod loaded. tools/queues.off (dev) leaves the game's size.
+using TaskSystemCreateFn=void*(*)(void* allocator,uint8_t* description);
+TaskSystemCreateFn g_taskSystemCreate{};
+void* TaskSystemCreateHook(void* allocator,uint8_t* description) {
+    if(description&&At<uint32_t>(description,0x20)>=16&&At<uint32_t>(description,0x20)<48
+       &&GetFileAttributesW(L"C:/Mods/Enshrouded/TownPortal/tools/queues.off")==INVALID_FILE_ATTRIBUTES){
+        char line[140]{};
+        std::snprintf(line,sizeof(line),"Town Portal: the game's task queues raised from %u to 48 (room for the live view on a hosted world)",At<uint32_t>(description,0x20));
+        At<uint32_t>(description,0x20)=48;
+        greeneye::Host()->log(line);
+    }
+    return g_taskSystemCreate(allocator,description);
+}
 using BrickTreeCreateFn=void*(*)(void* allocator,void* parameters);
 BrickTreeCreateFn g_brickTreeCreate{};
 bool g_creatingOwned{};
@@ -1002,7 +1054,7 @@ void CreateOwnedViewBody(void* scene) {
         char line[100]{};std::snprintf(line,sizeof(line),"Town Portal: live view quality: %s",liveQuality==2?"Fast":liveQuality==1?"Balanced":"Full");
         greeneye::Host()->log(line);
     }
-    const bool farWater=liveQuality==0&&GetFileAttributesW(L"C:/Mods/Enshrouded/TownPortal/tools/water.off")==INVALID_FILE_ATTRIBUTES;
+    bool farWater=liveQuality==0&&GetFileAttributesW(L"C:/Mods/Enshrouded/TownPortal/tools/water.off")==INVALID_FILE_ATTRIBUTES;
     At<uint32_t>(description,4)=(At<uint32_t>(description,4)|0x100)&~0x80u;
     if(farWater)At<uint32_t>(description,4)|=0x80u;
     // Dev test: tools\water.tree keeps the water brick tree (create flag 0x80).
@@ -1142,6 +1194,7 @@ void* ViewCreateHook(void* result,void* root,void* description) {
         std::lock_guard lock(g_lock);
         g_nativeThreads->create=GetCurrentThreadId();
         g_world->scene=At<uint64_t>(result,8);g_world->worldBound=0;
+        g_liveUnavailable=false; // a new world: room for the live view is judged again
         std::memcpy(g_world->creation,description,sizeof(g_world->creation));
     }
     return returned;
@@ -1151,6 +1204,15 @@ void WorldBindHook(void* models,const void* description) {
     g_worldBind(models,description);
     if(lease) {
         std::lock_guard lock(g_lock);
+        {
+            static uint32_t told=0;
+            if(told<20){
+                ++told;char line[160]{};
+                std::snprintf(line,sizeof(line),"Town Portal: the game attaches a scene to the world: %p (the player's view %p)%s",
+                              reinterpret_cast<void*>(At<uint64_t>(models,0)),reinterpret_cast<void*>(g_world->scene),At<uint64_t>(models,0)==g_world->scene?"":", not the player's");
+                greeneye::Host()->log(line);
+            }
+        }
         if(At<uint64_t>(models,0)==g_world->scene) {
             g_nativeThreads->bind=GetCurrentThreadId();
             std::memcpy(g_world->binding,description,sizeof(g_world->binding));
@@ -1177,7 +1239,15 @@ bool QueueCapacity(void* scene,uint32_t needed) {
     auto* scheduler=At<void*>(At<void*>(scene,0),0x148);
     const auto used=At<uint32_t>(scheduler,0xe0);
     const auto capacity=At<uint32_t>(scheduler,0xf0);
-    if(capacity<used||capacity-used<needed) {g_target->error=0x10006;return false;}
+    if(capacity<used||capacity-used<needed) {
+        static uint64_t told=0;
+        if(const uint64_t now=GetTickCount64();now-told>10000){
+            told=now;char line[160]{};
+            std::snprintf(line,sizeof(line),"Town Portal: live view waits for the game's task queues (%u of %u in use, %u needed)",used,capacity,needed);
+            greeneye::Host()->log(line);
+        }
+        return false;
+    }
     return true;
 }
 void ProcessTargetRequest(void* scene,uint32_t action) {
@@ -1214,26 +1284,118 @@ void ProcessTargetRequest(void* scene,uint32_t action) {
 // [Portals] LiveView in town-portal.ini: Full (the default), Balanced, Fast, or Off (the old
 // pictures with parallax, no live view). Read again at most once a second; the quality is taken
 // when the second camera is made (CreateOwnedView), Off takes effect at once.
-inline constexpr const char* kLiveViewKey =
+inline constexpr const char* kLiveViewKey2_0_0 =
     "; LiveView: what you see through a portal. Full shows the other side live; Balanced leaves\n"
     "; water out of that view and Fast also its bounced light (more frames a second, darker shade);\n"
     "; Off shows still pictures of the other side as in earlier versions.\n"
     "LiveView=Full\n";
+inline constexpr const char* kLiveViewKey =
+    "; LiveView: what you see through a portal. Auto: live (Full) only with the game's Ultra Quality\n"
+    "; preset on an NVIDIA graphics card with 8 GB or more, otherwise still pictures with depth (Off).\n"
+    "; Full shows the other side live; Balanced leaves water out of that view and Fast also its\n"
+    "; bounced light (more frames a second, darker shade); Off shows still pictures, as in 1.x.\n"
+    "LiveView=Auto\n";
+// 2.0.0 wrote LiveView=Full into every file. Its block, untouched, becomes Auto; a value the
+// player set by hand stays (2.0.1: the live view hung an AMD card and cost others too much).
+void MigrateLiveViewKey() {
+    const std::wstring path=rules::Path();
+    FILE* f=_wfopen(path.c_str(),L"rb");
+    if(!f)return;
+    std::string text;char buf[4096];
+    for(size_t n;(n=std::fread(buf,1,sizeof(buf),f))>0;)text.append(buf,n);
+    std::fclose(f);
+    std::string old=kLiveViewKey2_0_0;
+    size_t at=text.find(old);
+    if(at==std::string::npos){ // the same with CRLF line ends
+        std::string crlf;for(char ch:old){if(ch=='\n')crlf+='\r';crlf+=ch;}
+        at=text.find(crlf);if(at!=std::string::npos)old=crlf;
+    }
+    if(at==std::string::npos)return;
+    text.replace(at,old.size(),kLiveViewKey);
+    if(FILE* out=_wfopen(path.c_str(),L"wb")){std::fwrite(text.data(),1,text.size(),out);std::fclose(out);}
+    greeneye::Host()->log("Town Portal: LiveView=Full from 2.0.0 changed to LiveView=Auto in town-portal.ini");
+}
+// LiveView=Auto: 0 Full, -1 Off. The live view was made and tested on an NVIDIA card with the
+// game's Ultra Quality preset; on an AMD RX 7900 XTX (FSR3) its first frame hung the graphics
+// card, and others lost too many frames a second (Nexus, 2026-11-10). Auto shows it live only
+// with the Ultra preset (user's rule, 2026-11-10) on an NVIDIA card with 8 GB or more; anything
+// else gets the still pictures with depth.
+int LiveViewAuto() {
+    static int choice=-2;
+    if(choice!=-2)return choice;
+    uint32_t vendor=0;uint64_t memory=0;
+    IDXGIFactory1* factory=nullptr;
+    if(SUCCEEDED(CreateDXGIFactory1(__uuidof(IDXGIFactory1),reinterpret_cast<void**>(&factory)))){
+        IDXGIAdapter1* adapter=nullptr;
+        for(UINT i=0;i<8&&factory->EnumAdapters1(i,&adapter)!=DXGI_ERROR_NOT_FOUND;++i){
+            DXGI_ADAPTER_DESC1 desc{};
+            if(SUCCEEDED(adapter->GetDesc1(&desc))&&!(desc.Flags&DXGI_ADAPTER_FLAG_SOFTWARE)&&desc.DedicatedVideoMemory>memory){
+                memory=desc.DedicatedVideoMemory;vendor=desc.VendorId;
+            }
+            adapter->Release();
+        }
+        factory->Release();
+    }
+    std::string preset;
+    {
+        PWSTR games=nullptr;std::string text;
+        if(SUCCEEDED(SHGetKnownFolderPath(FOLDERID_SavedGames,0,nullptr,&games))){
+            const std::wstring path=std::wstring(games)+L"\\keen games\\Enshrouded\\local_settings.json";
+            if(FILE* f=_wfopen(path.c_str(),L"rb")){text.resize(65536);text.resize(std::fread(text.data(),1,text.size(),f));std::fclose(f);}
+            CoTaskMemFree(games);
+        }
+        const size_t at=text.find("\"preset\"");
+        if(at!=std::string::npos){
+            const size_t open=text.find('"',text.find(':',at+8));
+            const size_t close=open==std::string::npos?open:text.find('"',open+1);
+            if(close!=std::string::npos)preset=text.substr(open+1,close-open-1);
+        }
+    }
+    const uint64_t gb=memory>>30;
+    const char* why="the game's Ultra Quality preset";
+    choice=0;
+    if(preset!="Ultra"){choice=-1;why="the game's preset is not Ultra Quality";}
+    else if(vendor!=0x10de){choice=-1;why=vendor==0x1002?"an AMD graphics card":vendor==0x8086?"an Intel graphics card":"the graphics card is not NVIDIA";}
+    else if(gb<8){choice=-1;why="under 8 GB of video memory";}
+    char line[220]{};
+    std::snprintf(line,sizeof(line),"Town Portal: LiveView=Auto chose %s: %s (preset %s, graphics card vendor %04x, %llu GB)",
+                  choice<0?"Off (still pictures)":"Full (live)",why,preset.empty()?"unknown":preset.c_str(),vendor,static_cast<unsigned long long>(gb));
+    greeneye::Host()->log(line);
+    return choice;
+}
 int LiveViewSetting() {
     static uint64_t checked=0;static int value=0;static bool added=false;
     const uint64_t now=GetTickCount64();
-    if(!added){added=true;rules::AddPortalsKey(L"LiveView",kLiveViewKey);}
+    if(!added){added=true;MigrateLiveViewKey();rules::AddPortalsKey(L"LiveView",kLiveViewKey);}
     if(now-checked>1000){
         checked=now;
         wchar_t text[16]{};
-        GetPrivateProfileStringW(L"Portals",L"LiveView",L"Full",text,16,rules::Path().c_str());
-        value=!_wcsicmp(text,L"Off")?-1:!_wcsicmp(text,L"Balanced")?1:!_wcsicmp(text,L"Fast")?2:0;
+        GetPrivateProfileStringW(L"Portals",L"LiveView",L"Auto",text,16,rules::Path().c_str());
+        value=!_wcsicmp(text,L"Off")?-1:!_wcsicmp(text,L"Balanced")?1:!_wcsicmp(text,L"Fast")?2:!_wcsicmp(text,L"Full")?0:LiveViewAuto();
     }
     return value;
 }
+// The game has 32 task queues for all its scenes; the second camera's scene takes 2, its water
+// 2 more, and attaching it to the world 1. On a world the player hosts, the server inside the
+// game holds more of them: only 3 were free, and a second camera made in that squeeze (without
+// its water) crashed the graphics card within seconds, twice ("Vulkan device lost" in the world
+// distance field pass, 2026-11-10). So the live view is only started with room for all five;
+// otherwise the portals show their pictures as with LiveView=Off, until the next world.
 bool LiveAuto(uint64_t now) {
     (void)now;
-    return LiveViewSetting()>=0;
+    return LiveViewSetting()>=0&&!g_liveUnavailable.load();
+}
+bool LiveRoom(void* scene) {
+    auto* scheduler=At<void*>(At<void*>(scene,0),0x148);
+    const uint32_t used=At<uint32_t>(scheduler,0xe0),capacity=At<uint32_t>(scheduler,0xf0);
+    const uint32_t free=capacity<used?0u:capacity-used;
+    if(free>=5)return true;
+    if(!g_liveUnavailable.exchange(true)){
+        char line[200]{};
+        std::snprintf(line,sizeof(line),"Town Portal: live view off for this world: %u of %u of the game's task queues free, 5 needed (a hosted world's server holds the rest); portals show pictures",free,capacity);
+        greeneye::Host()->log(line);
+    }
+    return false;
 }
 void ReleaseOwnedView() {
     if(!g_target->view||!g_world||g_world->ownedView!=reinterpret_cast<uint64_t>(g_target->view))return;
@@ -1421,7 +1583,8 @@ void LiveLifecycle(void* scene) {
     if(wanted){
         if(!g_target->ticket)return; // the first visible portal allocates the compositor's images
         if(!g_target->view){
-            if(g_world->reservedSlots<4||g_world->scene!=reinterpret_cast<uint64_t>(scene)||!QueueCapacity(scene,2))return;
+            // 2 for the scene, 2 for its water and 1 for attaching it to the world (LiveRoom).
+            if(g_world->reservedSlots<4||g_world->scene!=reinterpret_cast<uint64_t>(scene)||!LiveRoom(scene))return;
             CreateOwnedView(scene);
             stepAt=now+250;
         }
@@ -1710,7 +1873,7 @@ void RenderWithExitPlane(void* result,void* context,void* input,void* target,
         // Rendering consumes model/animation queues. Always use this camera's
         // own native model scene; substituting the primary scene is forbidden.
         g_clipScope={};
-        if(destination&&g_exitClipEnabled){
+        if(destination&&g_exitClipEnabled&&!g_farShot.active){ // a snapshot frame looks away from the exit
             // Where the view leads, the way round the snapshots have it (portal_types.h Turned).
             const PortalEndpoint end=g_nowField?g_nowPortal.baseEnd:g_nowPortal.fieldEnd.Turned();
             FixedPos fixed{};std::memcpy(&fixed,mapped+0x38,sizeof(fixed));
@@ -2277,7 +2440,7 @@ void SyncOwnedActors() {
     if(disabled)return;
     // One new twin a tick: the nearest group without one within 120 m of the second camera.
     static uint64_t nextCreate=0;
-    if(now<nextCreate||g_actors->count>=kActors)return;
+    if(now<nextCreate)return;
     nextCreate=now+50;
     const uint64_t pages=At<uint64_t>(source,0x3c8);
     const uint64_t shift=At<uint64_t>(source,0x3e8)&0x3f;
@@ -2334,6 +2497,7 @@ void SyncOwnedActors() {
         std::snprintf(line,sizeof(line),"Town Portal: animated groups without a twin: %u, within 120 m %u with %u parts (no model %u, no meshes %u, cloth model %u, cloth pieces %u, other %u); twins %u",
                       groups,inRange,parts,noModel,noMesh,clothModel,clothPieces,other,g_actors->count);
         greeneye::Host()->log(line);
+#ifdef TOWN_PORTAL_DEV
         // Dev: the twins with a real skeleton (creatures, people; swaying plants have ~4 joints):
         // joints and metres from the far end, to tell whether enemies reach this game at all.
         char list[400]{};size_t used=0;uint32_t plants=0;
@@ -2353,11 +2517,29 @@ void SyncOwnedActors() {
         }
         std::snprintf(line,sizeof(line),"Town Portal (dev): twins with skeletons:%s; %u small (plants)",used?list:" none",plants);
         greeneye::Host()->log(line);
+#endif
     }
     if(!best)return;
     auto* record=GroupRecord(source,best);
     ActorRecord* slot=nullptr;
     for(auto& a:g_actors->records)if(!a.ownedGroup){slot=&a;break;}
+    // All twins in use (a busy base has more than 150 animated things within 120 m): the one
+    // farthest from the second camera makes way for a nearer one, so whoever stands by the far
+    // end (the player, other players) is always among them. Full, the player was not shown
+    // (user, 2026-11-10).
+    if(!slot){
+        ActorRecord* farthest=nullptr;float farthestDistance=0;
+        for(auto& a:g_actors->records){
+            if(!a.ownedGroup)continue;
+            auto* r=GroupRecord(source,a.sourceGroup);auto* first=r?At<uint8_t*>(r,0x48):nullptr;
+            if(!first)continue;
+            FixedPos fixed{};std::memcpy(&fixed,first+0x38,sizeof(fixed));
+            math::Vec3 at{};ToFloat(fixed,at.x,at.y,at.z);
+            const float d=math::Finite(at)?math::LengthSq(at-g_modelFocus):1e30f;
+            if(d>farthestDistance){farthestDistance=d;farthest=&a;}
+        }
+        if(farthest&&std::sqrt(farthestDistance)>std::sqrt(bestDistance)+5.f){DropActor(owned,*farthest);slot=farthest;}
+    }
     if(!record||!slot)return;
     uint32_t eligible=0,walked=0;
     for(auto* instance=At<uint8_t*>(record,0x48);instance&&walked<256;instance=At<uint8_t*>(instance,0x100),++walked)
@@ -3806,6 +3988,8 @@ void RenderHoldingMesher(void* result,void* context,void* input,void* target,con
     __try {RenderWithExitPlane(result,context,input,target,mapped,destination);}
     __finally {if(hold)At<void*>(state,0x978)=mesher;if(tree)At<void*>(modelScene,0xa80)=tree;}
 }
+bool FarShotFrame(const void* input,const PortalEndpoint& to,uint8_t* pose);
+void FarShotChoose(const void* input);
 void RenderOwnedOnce(void* context,void* input) {
     NoteGraphicsLock();
     __try {
@@ -3840,7 +4024,8 @@ void RenderOwnedOnce(void* context,void* input) {
                 static uint64_t checked=0;static bool one=false;static bool turn=false;
                 const uint64_t now=GetTickCount64();
                 if(now-checked>1000){checked=now;one=GetFileAttributesW(L"C:/Mods/Enshrouded/TownPortal/tools/live.one")!=INVALID_FILE_ATTRIBUTES;}
-                bool can=!one&&g_liveSecond&&g_liveSecond->ticket&&g_liveSecond->image.context&&g_liveView.ready&&g_livePortal2.active&&now-std::min(now,g_liveSecondTick)<250;
+                FarShotChoose(input);
+                bool can=!one&&!g_farShot.active&&g_liveSecond&&g_liveSecond->ticket&&g_liveSecond->image.context&&g_liveView.ready&&g_livePortal2.active&&now-std::min(now,g_liveSecondTick)<250;
                 if(can){
                     const PortalEndpoint& a=g_liveField?g_livePortal.baseEnd:g_livePortal.fieldEnd;
                     const PortalEndpoint& b=g_liveField2?g_livePortal2.baseEnd:g_livePortal2.fieldEnd;
@@ -3870,6 +4055,7 @@ void RenderOwnedOnce(void* context,void* input) {
             // Dev: tools/live.same renders the first end on the second's turn too (into the second's image).
             if(second&&GetFileAttributesW(L"C:/Mods/Enshrouded/TownPortal/tools/live.same")!=INVALID_FILE_ATTRIBUTES){g_nowPortal=g_livePortal;g_nowField=g_liveField;}
             g_liveNow=second?&g_liveView2:&g_liveView;
+            if(g_farShot.active){g_nowPortal=g_farShot.portal;g_nowField=g_farShot.field;g_liveNow=&g_liveView;}
             PortalEndpoint from=g_nowField?g_nowPortal.fieldEnd:g_nowPortal.baseEnd;
             const PortalEndpoint to=g_nowField?g_nowPortal.baseEnd:g_nowPortal.fieldEnd.Turned();
             // Seen from behind, a portal shows the same view turned round (portal_composite.frag
@@ -3882,9 +4068,10 @@ void RenderOwnedOnce(void* context,void* input) {
                 if((camera.x-from.wx)*from.nx+(camera.z-from.wz)*from.nz<0)from=from.Turned();
             }
             if(!MapCameraEnds(&pose,input,from,to)) return;
+            const bool farShot=FarShotFrame(input,to,pose.data());
             // Where the player's camera looks, from the world view's matrices (last frame's):
             // the view's third row, along the sign the projection gives depth.
-            if(auto* world=WorldState();world&&!g_liveNoAim){
+            if(auto* world=WorldState();world&&!g_liveNoAim&&!farShot){
                 // The player's camera in the world, from the world view's matrices (last
                 // frame's): the view's rows are its right, up and (along the sign the
                 // projection gives depth) forward; the projection's [5] is 1 / tan(half fov).
@@ -3900,8 +4087,9 @@ void RenderOwnedOnce(void* context,void* input) {
             // This frame becomes the portal's live view (LiveCapture, from UpscaleHook).
             FixedPos eye{};std::memcpy(&eye,mapped+0x38,sizeof(eye));
             auto& l=*g_liveNow;
-            if(l.armedPortal!=g_nowPortal.portalId||l.armedField!=g_nowField||!l.since){l.since=GetTickCount64();l.ready=false;l.shownSince=0;l.snapshot.valid=false;}
-            l.armed=!g_liveNoStore;l.armedPortal=g_nowPortal.portalId;l.armedField=g_nowField;l.destination=to;
+            if(!farShot&&(l.armedPortal!=g_nowPortal.portalId||l.armedField!=g_nowField||!l.since)){l.since=GetTickCount64();l.ready=false;l.shownSince=0;l.snapshot.valid=false;}
+            if(farShot)l.armed=false;
+            else{l.armed=!g_liveNoStore;l.armedPortal=g_nowPortal.portalId;l.armedField=g_nowField;l.destination=to;}
             if(g_liveNow==&g_liveView2)l.ready=g_liveView.ready; // the same far scene
             // Taking turns is no camera cut: the view carries its last frame over by its real
             // matrices, whichever end that was for.
@@ -3924,6 +4112,7 @@ void RenderOwnedOnce(void* context,void* input) {
             // Without a cut both ends came out empty (the swirl only): the view's culling works
             // from its last frame, which was the other end's. tools/live.nocut (dev) tries it so.
             if(g_liveAlternating&&GetFileAttributesW(L"C:/Mods/Enshrouded/TownPortal/tools/live.nocut")==INVALID_FILE_ATTRIBUTES)mapped[0]=1;
+            if(farShot&&g_farShot.frames==1)mapped[0]=1; // a cut into the snapshot pose (and back: FarShotDoneNow)
             std::memcpy(g_destinationPose.data(),mapped+0x38,g_destinationPose.size());
             g_destinationPoseValid=true;
         } else if(g_destinationPoseValid&&GetTickCount64()<g_displayProbeUntil) {
@@ -4124,6 +4313,85 @@ bool SnapshotPose(const void* input,SnapshotRequest& r) {
         std::memcpy(r.pose+sizeof(fixed),rotated,sizeof(rotated));
         return true;
     } __except(EXCEPTION_EXECUTE_HANDLER) {return false;}
+}
+// Whether this frame of the second camera is a FarShot frame (see FarShot): if so the pose is
+// the snapshot camera's at `to`, the far end. Called from RenderOwnedOnce with the player's input.
+// Starts a FarShot when an end in sight has been live and settled for 2 s and has no picture of
+// its own from the last two minutes: the first end, or the second while two take turns (their
+// turns pause for the shot's few frames). Render thread, before the end of the frame is chosen.
+void FarShotChoose(const void* input) {
+    const uint64_t now=GetTickCount64();
+    static bool wasReady=false;static uint64_t readySince=0;
+    const bool ready=g_liveView.ready;
+    if(ready&&!wasReady)readySince=now;
+    wasReady=ready;
+    if(GetFileAttributesW(L"C:/Mods/Enshrouded/TownPortal/tools/farshot.off")!=INVALID_FILE_ATTRIBUTES){g_farShot.active=false;return;}
+    if(g_farShot.active){
+        if(!ready||now>g_liveUntil||now-g_farShot.startedAt>1500){
+            if(now-g_farShot.startedAt>1500)greeneye::Host()->log("Town Portal: far snapshot gave up (no frame came back)");
+            g_farShot.active=false;g_forceCameraCut=true;
+        }
+        return;
+    }
+    static uint64_t lastShot=0;
+    // Half a second after the end shows live (the far side has settled by then: "ready").
+    if(!ready||now-readySince<500||now-lastShot<1500)return;
+    auto due=[&](const PortalInstance& p,bool field){
+        if(!p.active)return false;
+        const PortalEndpoint to=field?p.baseEnd:p.fieldEnd.Turned();
+        for(const auto& d:g_farShotsDone){
+            const float dx=d.x-to.wx,dz=d.z-to.wz;
+            if(d.tick&&d.portalId==p.portalId&&d.field==field&&dx*dx+dz*dz<0.25f&&now-d.tick<120000)return false;
+        }
+        return true;
+    };
+    const PortalInstance* pick=nullptr;bool field=false;
+    if(due(g_livePortal,g_liveField)){pick=&g_livePortal;field=g_liveField;}
+    else if(g_liveAlternating&&due(g_livePortal2,g_liveField2)){pick=&g_livePortal2;field=g_liveField2;}
+    if(!pick)return;
+    const PortalEndpoint to=field?pick->baseEnd:pick->fieldEnd.Turned();
+    SnapshotRequest r{};r.end=to;r.distance=kFarShotDistance;
+    if(!SnapshotPose(input,r))return;
+    {
+        static uint64_t told=0;
+        if(now-told>5000){told=now;char line[120]{};
+            std::snprintf(line,sizeof(line),"Town Portal: far snapshot started for portal %llu %s end",static_cast<unsigned long long>(pick->portalId),field?"base":"field");
+            greeneye::Host()->log(line);}
+    }
+    g_farShot={};g_farShot.active=true;g_farShot.startedAt=now;g_farShot.portalId=pick->portalId;g_farShot.field=field;g_farShot.portal=*pick;g_farShot.end=to;
+    std::memcpy(g_farShot.pose,r.pose,sizeof(g_farShot.pose));
+    lastShot=now;
+}
+// Whether this frame of the second camera is a FarShot frame: if so its pose is the snapshot
+// camera's at the shot's end (RenderOwnedOnce has made that end this frame's).
+bool FarShotFrame(const void* input,const PortalEndpoint& to,uint8_t* pose) {
+    (void)input;(void)to;
+    g_farShot.captureNow=false;
+    if(!g_farShot.active)return false;
+    std::memcpy(pose+0x38,g_farShot.pose,sizeof(g_farShot.pose));
+    At<float>(pose,0x78)=kSnapshotFov;
+    if(++g_farShot.frames>=kFarShotFrames)g_farShot.captureNow=true;
+    return true;
+}
+extern int g_farShotWhy;
+void FarShotDoneNow(bool stored) {
+    if(!stored){
+        static uint64_t told=0;
+        if(const uint64_t now=GetTickCount64();now-told>5000){
+            told=now;char line[120]{};
+            std::snprintf(line,sizeof(line),"Town Portal: far snapshot not stored (step %d)",g_farShotWhy);
+            greeneye::Host()->log(line);
+        }
+    }
+    if(stored){
+        FarShotDone* slot=&g_farShotsDone[0];
+        for(auto& d:g_farShotsDone){
+            if(d.portalId==g_farShot.portalId&&d.field==g_farShot.field){slot=&d;break;}
+            if(d.tick<slot->tick)slot=&d;
+        }
+        *slot={g_farShot.portalId,g_farShot.field,g_farShot.end.wx,g_farShot.end.wz,GetTickCount64()};
+    }
+    g_farShot.active=false;g_farShot.captureNow=false;g_forceCameraCut=true;
 }
 bool InFrameEnabled(uint64_t now);
 // Whether this frame renders with *out: the snapshot camera, or the cut back to the player's.
@@ -4430,6 +4698,110 @@ void LiveCaptureGuard(void* scope,uint8_t* state,const ImageView& frame,float ex
     __try {LiveCapture(scope,state,frame,exposure,jittered);}
     __except(TargetFault(GetExceptionInformation())) {g_liveView.armed=false;g_liveView.snapshot.valid=false;g_liveView2.armed=false;g_liveView2.snapshot.valid=false;}
 }
+// A FarShot frame of the second camera stored as the far end's parallax picture: the departure
+// snapshot's storing (SnapshotCapture) with the second camera's frame, depth and matrices.
+int g_farShotWhy{};
+bool FarShotCapture(void* scope,uint8_t* state,const ImageView& frame,float exposure) {
+    auto& c=*g_composite;
+    if(!c.capturePipeline||!c.snapshotTicket||!g_world||!g_snapshotScratch->image.context){g_farShotWhy=1;return false;}
+    if(g_snapshotRequest.active){g_farShotWhy=2;return false;} // a departure snapshot uses the scratch target now
+    const PortalEndpoint end=g_farShot.end;
+    const float distance=kFarShotDistance;
+    const auto info=InspectImage(frame);
+    ImageView depth{};
+    Native<ImageView*(*)(ImageView*,void*)>(0x125f10)(&depth,state);
+    const auto depthInfo=InspectImage(depth);
+    if(!info.valid||!depthInfo.valid||info.width!=depthInfo.width||info.height!=depthInfo.height||
+       !(exposure>0)||!std::isfinite(exposure)){g_farShotWhy=3;return false;}
+    const math::Vec3 origin{end.wx+end.nx*distance,end.wy+1.62f,end.wz+end.nz*distance};
+    int slot=-1;
+    for(int i=0;i<kSnapshots&&slot<0;++i){
+        const auto& s=c.snapshots[i];
+        const float dx=s.x-end.wx,dz=s.z-end.wz;
+        if(s.valid&&dx*dx+dz*dz<0.5f*0.5f&&s.nx*end.nx+s.nz*end.nz>0.95f)slot=i; // this end's own
+    }
+    if(slot<0){
+        slot=0;
+        for(int i=0;i<kSnapshots;++i){
+            if(!c.snapshots[i].valid){slot=i;break;}
+            if(c.snapshots[i].tick<c.snapshots[slot].tick)slot=i;
+        }
+    }
+    auto& snapshot=c.snapshots[slot];
+    if(!snapshot.image.context){g_farShotWhy=4;return false;}
+    const ImageView& drawTarget=g_snapshotScratch->image;
+    g_liveView.snapshot.valid=false; // its frame shares the scratch target
+    const float* view=&At<float>(state,0x1000);
+    const float* projection=&At<float>(state,0x10c0);
+    const math::Vec3 right{end.rx,0,end.rz},up{0,1,0},normal{end.nx,0,end.nz};
+    float local[16]{};
+    if(!math::PortalLocalFromScreen(view,projection,origin,right,up,normal,local)){g_farShotWhy=5;return false;}
+    const float cropX=std::min(1.f,2.75f*std::fabs(projection[0])),cropY=std::min(1.f,1.43f*std::fabs(projection[5]));
+    if(!(cropX>0.05f&&cropY>0.05f)){g_farShotWhy=6;return false;}
+    float steady[16];std::memcpy(steady,projection,sizeof(steady)); // as SnapshotCapture: the frame's own projection
+    double clip[12]{};
+    for(int col=0;col<4;++col){
+        double v[4]{};
+        for(int k=0;k<4;++k)v[k]=view[col*4+k];
+        double out[4]{};for(int row=0;row<4;++row)for(int k=0;k<4;++k)out[row]+=double(steady[k*4+row])*v[k];
+        clip[col]=out[0]/cropX;clip[4+col]=out[1]/cropY;clip[8+col]=out[3];
+    }
+    for(double value:clip)if(!std::isfinite(value)){g_farShotWhy=7;return false;}
+    Snapshot taken{};
+    std::memcpy(taken.clip,clip,sizeof(clip));
+    taken.x=end.wx;taken.y=end.wy;taken.z=end.wz;taken.nx=end.nx;taken.nz=end.nz;
+    float rows[12]{};
+    {
+        PortalEndpoint at=end;
+        at.wx+=end.nx*(distance-kWindowStart);at.wz+=end.nz*(distance-kWindowStart);
+        SnapshotRows(taken,at,rows);
+    }
+    float vertices[3*kVertexFloats]{};
+    const float xy[3][2]={{-1,-1},{-1,3},{3,-1}};
+    for(int i=0;i<3;++i){
+        float* v=vertices+i*kVertexFloats;v[0]=xy[i][0];v[1]=xy[i][1];
+        std::memcpy(v+8,local,sizeof(local));std::memcpy(v+40,rows+8,4*sizeof(float));v[44]=cropX;v[45]=cropY;
+    }
+    uint64_t access=0x400;
+    Native<void(*)(void*,const void*,uint8_t,const uint64_t*)>(0x4cf00)(scope,&frame,7,&access);
+    Native<void(*)(void*,const void*,uint8_t,const uint64_t*)>(0x4cf00)(scope,&depth,7,&access);
+    const uint8_t attachment[]={0,1,0};
+    Native<void(*)(void*,const void*,const void*,const char*)>(0x6c340)(scope,&drawTarget,attachment,"town portal far snapshot");
+    Native<void(*)(void*,uint64_t)>(0x47a70)(scope,0x7ffffffff);
+    alignas(8) uint8_t bindings[3][0x28]{};
+    for(int i=0;i<2;++i){bindings[i][0]=3;At<ImageView>(bindings[i],8)=i?depth:frame;bindings[i][0x18]=7;}
+    bindings[2][0]=1;At<void*>(bindings[2],8)=At<void*>(reinterpret_cast<void*>(g_world->root),0x16e28);
+    alignas(8) uint8_t set[0x20]{};set[0]=3;At<void*>(set,8)=c.bindings;At<void*>(set,0x10)=bindings;At<uint64_t>(set,0x18)=3;
+    auto* graph=At<uint8_t*>(scope,0);
+    void* descriptor=Native<void*(*)(void*,void*,const void*)>(0x102a630)(At<void*>(graph,0),At<void*>(graph,0x10),set);
+    auto* command=CompositeCommand(scope,5,0x10);At<void*>(command,8)=c.capturePipeline;
+    command=CompositeCommand(scope,7,0x38);At<void*>(command,8)=c.layout;At<void*>(command,0x10)=descriptor;At<uint16_t>(command,0x30)=1;
+    bool drawn=false;
+    if(auto* mapped=Native<float*(*)(void*,void*,int)>(0x148a50)(scope,c.vertices,3)){
+        std::memcpy(mapped,vertices,sizeof(vertices));drawn=true;
+    }
+    Native<void(*)(void*)>(0x6c960)(scope);
+    if(!drawn){g_farShotWhy=8;return false;}
+    CopySnapshotImage(scope,drawTarget,snapshot.image);
+    g_snapshotShroud[slot]=false;g_snapshotDefault[slot]=false;
+    taken.image=snapshot.image;taken.cx=origin.x;taken.cy=origin.y;taken.cz=origin.z;
+    taken.exposure=exposure;taken.tick=GetTickCount64();taken.valid=true;
+    snapshot=taken;
+    ++c.captures;
+    char line[200]{};
+    std::snprintf(line,sizeof(line),"Town Portal: far snapshot of portal %llu %s end taken from the live camera (slot %d, frame %ux%u, field of view %.0f degrees)",
+                  static_cast<unsigned long long>(g_farShot.portalId),g_farShot.field?"base":"field",slot,info.width,info.height,
+                  2.f*std::atan(1.f/std::fabs(projection[5]))*57.2958f);
+    greeneye::Host()->log(line);
+    return true;
+}
+void FarShotCaptureGuard(void* scope,uint8_t* state,const ImageView& frame,float exposure) {
+    NoteGraphicsLock();
+    bool stored=false;
+    __try {stored=FarShotCapture(scope,state,frame,exposure);}
+    __except(TargetFault(GetExceptionInformation())) {}
+    FarShotDoneNow(stored);
+}
 void SnapshotCaptureGuard(void* scope,uint8_t* state,const ImageView& frame,const ImageView& sceneColor,float exposure) {
     NoteGraphicsLock();
     __try {SnapshotCapture(scope,state,frame,sceneColor,exposure);}
@@ -4687,6 +5059,7 @@ void DepthRecord(void* scope,const ImageView& depth,uint64_t now) {
 // which is where their images are known; g_earlyColour says the colour is already in.
 bool g_earlyColour{};
 std::atomic<float> g_frameExposure{0.f};
+uint32_t g_lateDepthFrames{};
 bool InFrameDraw(void* scope,uint8_t* state,uint8_t* inputs,bool lightOnly=false,const ImageView* early=nullptr) {
     auto& c=*g_composite;
     if(!c.enabled||!c.framePipeline||c.error||!g_target||g_target->error||!g_world)return false;
@@ -4746,6 +5119,7 @@ bool InFrameDraw(void* scope,uint8_t* state,uint8_t* inputs,bool lightOnly=false
     }
     MotionRecord(scope,state,inputs,depth,now);
     DepthRecord(scope,depth,now);
+    ++g_lateDepthFrames; // this frame's portal was not drawn before the effects
     ++c.inFrameFrames;c.inFrameTick=now;c.tick=now;++c.frames;
     if(g_liveView.snapshot.valid&&g_liveView.ready&&!lightOnly){
         const uint64_t lag=g_frameNo-g_liveFrameNo;
@@ -5000,8 +5374,36 @@ void** VfxFogSlot(uint8_t* state) {
     if(lease&&!keep&&state&&g_ownedAspectNow>0&&g_target&&g_target->view&&At<uint8_t*>(g_target->view,0xa0)==state)return &At<void*>(state,0xb40);
     return nullptr;
 }
+// The portal's depth in the half-size depth (view state +0x220) the game's half-size effects
+// (an altar's fire and smoke) are tested against: written just before that pass (the second of
+// the three calls), after the game's depth_downsample (FUN_140073020, at the pre-water call)
+// has made +0x220 from the full depth, which wiped a write made earlier; the downsample alone
+// lost the portal round its outline, and the fire blended over its edge (user, 2026-11-10;
+// static RE C:/temp/enshrouded-re/fxdepth-q*-out.txt). tools/halfdepth.off (dev) leaves it.
+void HalfDepthBeforeEffects(void* scope,uint8_t* state) {
+    if(!g_composite||!g_target||!g_world||state!=WorldState())return;
+    static uint64_t checked=0;static bool off=false;
+    const uint64_t now=GetTickCount64();
+    if(now-checked>1000){checked=now;off=GetFileAttributesW(L"C:/Mods/Enshrouded/TownPortal/tools/halfdepth.off")!=INVALID_FILE_ATTRIBUTES;}
+    if(off||!g_earlyColour)return; // the portal was drawn before the effects this frame
+    const ImageView half=At<ImageView>(state,0x220);
+    if(!InspectImage(half).valid)return;
+    DepthRecord(scope,half,now);
+}
+void HalfDepthGuard(void* scope,uint8_t* state) {
+    NoteGraphicsLock();
+    __try {HalfDepthBeforeEffects(scope,state);}
+    __except(TargetFault(GetExceptionInformation())) {}
+}
+void HalfDepthLocked(void* scope,uint8_t* state) {
+    greeneye::Lease lease;
+    if(!lease)return;
+    std::lock_guard lock(g_lock);
+    HalfDepthGuard(scope,state);
+}
 void* VfxPassCall(int which,void* scope,uint8_t* state,void* description) {
     VfxPassEarly(scope,state);
+    if(which==1)HalfDepthLocked(scope,state);
     void** fog=VfxFogSlot(state);void* saved=nullptr;
     if(fog)FarPortalEarly(scope,state);   // fog is non-null only for the second camera's own render
     if(fog){saved=*fog;*fog=nullptr;}
@@ -5034,6 +5436,11 @@ void DeferFar(void* scope,uint8_t* state,uint8_t* inputs,const ImageView& frameG
     if(const uint64_t now=GetTickCount64();now-checked>1000){checked=now;direct=GetFileAttributesW(L"C:/Mods/Enshrouded/TownPortal/tools/live.deferred")==INVALID_FILE_ATTRIBUTES; /* deferred storing blew the portal out to white (feedback through the portal-in-portal picture, 2026-11-10): off unless asked for */}
     g_farInvExposure=At<float>(inputs,0x9c);
     const bool drawnEarly=g_farPortalDrawn;g_farPortalDrawn=false;
+    if(g_farShot.captureNow){ // a FarShot frame: stored as the end's parallax picture, not live
+        FarShotCaptureGuard(scope,state,frame,exposure);
+        return;
+    }
+    if(g_farShot.active)return; // the frames before it: neither live nor stored
     if(!g_glowPreSeen||direct){
         if(!drawnEarly)OwnedPortalDrawGuard(scope,state,inputs);
         LiveCaptureGuard(scope,state,frame,exposure,jittered);
@@ -5149,7 +5556,7 @@ void* UpscaleHook(void* scope,uint8_t* upscalers,uint8_t* inputs) {
         bool owned=false;
         {
             std::lock_guard lock(g_lock);
-            owned=g_liveNow->armed&&g_target->view&&upscalers-0xf38==At<uint8_t*>(g_target->view,0xa0);
+            owned=(g_liveNow->armed||g_farShot.captureNow)&&g_target->view&&upscalers-0xf38==At<uint8_t*>(g_target->view,0xa0);
         }
         if(owned){
             const ImageView sceneColor=At<ImageView>(inputs,0x10);
@@ -5163,13 +5570,13 @@ void* UpscaleHook(void* scope,uint8_t* upscalers,uint8_t* inputs) {
             if(upscaled){
                 void* returned=g_upscaleNext(scope,upscalers,inputs);
                 std::lock_guard lock(g_lock);
-                if(g_liveNow->armed&&g_target->view)DeferFar(scope,upscalers-0xf38,inputs,At<ImageView>(inputs,0x40),exposure,false);
+                if((g_liveNow->armed||g_farShot.captureNow)&&g_target->view)DeferFar(scope,upscalers-0xf38,inputs,At<ImageView>(inputs,0x40),exposure,false);
                 {static uint64_t told=0;if(const uint64_t now=GetTickCount64();now-told>20000){told=now;DescribeUpscaled("second camera's (own upscaler)",returned,inputs,upscalers);}}
                 return returned;
             }
             if(g_liveRaw){
                 std::lock_guard lock(g_lock);
-                if(g_liveNow->armed&&g_target->view)DeferFar(scope,upscalers-0xf38,inputs,sceneColor,exposure,true);
+                if((g_liveNow->armed||g_farShot.captureNow)&&g_target->view)DeferFar(scope,upscalers-0xf38,inputs,sceneColor,exposure,true);
                 void* returned=g_upscaleNext(scope,upscalers,inputs);
                 {static uint64_t told=0;if(const uint64_t now=GetTickCount64();now-told>20000){told=now;DescribeUpscaled("second camera's",returned,inputs,upscalers);}}
                 return returned;
@@ -5180,7 +5587,7 @@ void* UpscaleHook(void* scope,uint8_t* upscalers,uint8_t* inputs) {
                 static uint64_t finalChecked=0;
                 if(const uint64_t now=GetTickCount64();now-finalChecked>1000){finalChecked=now;g_liveFinalTest=GetFileAttributesW(L"C:\\Mods\\Enshrouded\\TownPortal\\tools\\live.final")!=INVALID_FILE_ATTRIBUTES;}
             }
-            if(g_liveNow->armed&&g_target->view)DeferFar(scope,upscalers-0xf38,inputs,g_liveFinalTest?g_target->color:sceneColor,exposure,false);
+            if((g_liveNow->armed||g_farShot.captureNow)&&g_target->view)DeferFar(scope,upscalers-0xf38,inputs,g_liveFinalTest?g_target->color:sceneColor,exposure,false);
             {static uint64_t told=0;if(const uint64_t now=GetTickCount64();now-told>20000){told=now;DescribeUpscaled("second camera's (after)",returned,inputs,upscalers);}}
             return returned;
         }
@@ -5375,7 +5782,7 @@ bool Init(const GreeneyeHost* host) {
     // v3: frame and light pipelines, in-frame counters. v4: snapshots, 48-float vertices.
     // v5: snapshots keep their camera projection. v6: shader fingerprint (shader changes
     // alone no longer need a new name: they rebuild the pipelines). v7: 52-float vertices.
-    g_composite=static_cast<CompositeState*>(host->keep("portal-gpu-composite-v7",sizeof(CompositeState)));
+    g_composite=static_cast<CompositeState*>(host->keep("portal-gpu-composite-v8",sizeof(CompositeState)));
     if(!g_composite)return false;
     g_sharedGpu=static_cast<SharedGpuState*>(host->keep("portal-shared-snapshot-gpu-v1",sizeof(SharedGpuState)));
     if(!g_sharedGpu)return false;
@@ -5397,6 +5804,12 @@ bool Init(const GreeneyeHost* host) {
         g_tableFill=reinterpret_cast<TableFillFn>(host->redirectCall(site+21,reinterpret_cast<void*>(TableFillHook)));
     host->log(g_tableFill?"Town Portal: live view: effects keep their frame-to-frame table in the far view":"Town Portal: live view: effect table wipe not found");
     g_fxPrivate=static_cast<FxPrivate*>(host->keep("portal-fx-private-v1",sizeof(FxPrivate)));
+    // 13 bytes: eight pushes; no relative operands. Client exe only (the dedicated server has
+    // its own start-up and does not render).
+    if(auto* tasks=host->find("40 55 53 56 57 41 54 41 55 41 56 41 57 48 8D AC 24 C8 FB FF FF 48 81 EC 38 05 00 00",nullptr))
+        g_taskSystemCreate=reinterpret_cast<TaskSystemCreateFn>(host->hook(tasks,reinterpret_cast<void*>(TaskSystemCreateHook),13,nullptr,0));
+    host->log(g_taskSystemCreate?"Town Portal: task system create taken (more task queues from the next game start)":"Town Portal: task system create not found");
+    LiveViewSetting(); // town-portal.ini's LiveView brought up to date (Auto) and logged at start
     // 17 bytes: a stack save and eight pushes; no relative operands.
     if(auto* atlas=host->find("48 89 4C 24 08 55 53 56 57 41 54 41 55 41 56 41 57 48 8D 6C 24 E1 48 81 EC 98 00 00 00 48 8B 02",nullptr))
         g_fogAtlas=reinterpret_cast<FogAtlasFn>(host->hook(atlas,reinterpret_cast<void*>(FogAtlasHook),17,nullptr,0));
@@ -5459,7 +5872,7 @@ bool Init(const GreeneyeHost* host) {
     if(auto* entry=host->find("48 89 5C 24 10 48 89 6C 24 18 56 57 41 56 48 81 EC 80 00 00 00 48 8B 41 08 0F 57 C0 48 8B 99 AC 00 00 00 48 8B E9 0F 29 74 24 70 0F 28 F1",nullptr))
         g_renderScale=reinterpret_cast<RenderScaleFn>(host->hook(entry,reinterpret_cast<void*>(RenderScaleHook),14,nullptr,0));
     host->log(g_renderScale?"Town Portal: live view: frame size follows the opening":"Town Portal: live view: render size call not found; the second camera keeps its full frame");
-    g_actors=static_cast<ActorState*>(host->keep("portal-owned-actors-v1",sizeof(ActorState)));
+    g_actors=static_cast<ActorState*>(host->keep("portal-owned-actors-v2",sizeof(ActorState)));
     // Optional (effects in the live view): the effect system's start and stop, build of 2026-11-02.
     g_effects=static_cast<EffectState*>(host->keep("portal-owned-effects-v2",sizeof(EffectState)));
     g_effectCreate=reinterpret_cast<EffectCreateFn>(host->find("48 89 6C 24 10 48 89 74 24 18 48 89 7C 24 20 41 56 48 83 EC 20 48 8B 6A 08 48 8B FA 48 8B 52 28 49 8B F1 4D 8B D8 4C 8B F1 48 85 D2",nullptr));

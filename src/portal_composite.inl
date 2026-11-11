@@ -15,7 +15,7 @@ CastEffectState g_cast{};
 // in alpha each pixel's depth along the snapshot camera's view (metres). The camera's own
 // projection is kept, so a snapshot also serves a portal standing a little way from where it
 // was taken (each new base portal by the same altar gets its own spot): it is re-aimed there.
-constexpr int kSnapshots=4;
+constexpr int kSnapshots=8; // 4 until 2.0.1: far-end snapshots of every live end need more
 constexpr uint32_t kSnapshotWidth=2048,kSnapshotHeight=1024;
 struct Snapshot {
     ImageView image{};
@@ -41,6 +41,11 @@ const Snapshot* GagSnapshot(const PortalInstance& p,bool field,uint64_t now); //
 const Snapshot* LiveSnapshot(const PortalInstance& p,bool field,uint64_t now);
 bool IsLiveSnapshot(const Snapshot* s);
 bool LiveOnly(uint64_t now);
+const Snapshot* InnerPicture(); // the live frame of the end whose far view is being drawn into
+// The live camera is on its way to this end (asked for, far side not ready yet): its picture is
+// shown wavy. Every other end that is not live shows its picture plainly (user, 2026-11-10: a
+// portal that is set should always show either the live view or its parallax picture).
+bool LiveWaiting(const PortalInstance& p,bool field,uint64_t now);
 float LiveFade(const Snapshot* s,uint64_t now);
 // How far a live frame is traced from the viewer's eye as it is now (1) or as it was when the
 // frame was taken (0); a dev test (tools\motion.tune) can lower it.
@@ -426,11 +431,20 @@ void CompositeRecord(void* pass,void* state,const ImageView& depth,bool inFrame,
         if(inFrame&&invExposure>0){
             bool shroud=false;snapshot[i]=GagSnapshot(slot.portal,slot.field,now);
             if(!snapshot[i])snapshot[i]=LiveSnapshot(slot.portal,slot.field,now);
+            // A portal drawn inside another portal's view (OwnedPortalDraw): with no fresh live
+            // frame of its own it showed the plain swirl inside the view (user, 2026-11-10); it
+            // takes the far frame being drawn into instead (the shader fits it to the lens).
+            if(!snapshot[i]&&g_innerDraw)snapshot[i]=InnerPicture();
             const bool liveOnly=false; // the pictures are back while the far side loads, shown wavy (user, 2026-11-10)
             if(!snapshot[i]&&!liveOnly)snapshot[i]=SharedSnapshot(slot.portal,slot.field,shroud);
             if(!snapshot[i]&&!liveOnly){int local=FindSnapshot(destination);if(local>=0){snapshot[i]=&c.snapshots[local];g_snapshotShown[local]=now;}}
+            bool hidDefault=false; // a default picture there, kept out of sight: not missing
+            // With the live view on, a region's default picture is never shown (user, 2026-11-10,
+            // again: the Springlands picture came up in other places "for a bit before loading"):
+            // an end without a picture of its own shows the soft dark cloud until the live camera
+            // has taken one (FarShot), half a second after it first shows live.
             if(snapshot[i]&&LiveOnly(now))
-                for(int k=0;k<kSnapshots;++k)if(snapshot[i]==&c.snapshots[k]&&g_snapshotDefault[k]){snapshot[i]=nullptr;break;}
+                for(int k=0;k<kSnapshots;++k)if(snapshot[i]==&c.snapshots[k]&&g_snapshotDefault[k]){snapshot[i]=nullptr;hidDefault=true;break;}
             {   // Dev: tools/blank.test shows every portal as still waiting for its picture (to judge the look).
                 static uint64_t checked=0;static bool blank=false;
                 if(now-checked>1000){checked=now;blank=GetFileAttributesW(L"C:/Mods/Enshrouded/TownPortal/tools/blank.test")!=INVALID_FILE_ATTRIBUTES;}
@@ -438,7 +452,9 @@ void CompositeRecord(void* pass,void* state,const ImageView& depth,bool inFrame,
             }
             // Either side: the way home too has a default picture until a capture of the altar
             // matches (none yet, or the base end moved since the saved one was taken).
-            if(!snapshot[i]&&!slot.portal.closing)g_missing={slot.portal.portalId,now,destination};
+            // (Not when its default picture was only hidden: that counted as missing, and the
+            // default was uploaded again into slot after slot, pushing real pictures out.)
+            if(!snapshot[i]&&!hidDefault&&!slot.portal.closing)g_missing={slot.portal.portalId,now,destination};
         }
         bool live=!inFrame&&(g_ownedRenderFlags&0x7ff)==0x7ff&&g_renderedPortal==slot.portal.portalId&&g_renderedField==slot.field;
         // Opening: 0..1 over the channel. Closing: shrink back over 0.5 s.
@@ -455,7 +471,7 @@ void CompositeRecord(void* pass,void* state,const ImageView& depth,bool inFrame,
                                       // while the live view is on its way: -(10 + brightness); the live view's
                                       // first 0.8 s: minus how far it has settled.
                                       !shown?(inFrame&&LiveOnly(now)?-5.f:0.f):IsLiveSnapshot(shown)?(LiveFade(shown,now)<1.f?-std::max(0.004f,LiveFade(shown,now)):1.f)
-                                            :LiveOnly(now)?-(10.f+std::clamp(std::sqrt(shown->exposure*invExposure),1.f,4.f))
+                                            :LiveWaiting(p,slot.field,now)?-(10.f+std::clamp(std::sqrt(shown->exposure*invExposure),1.f,4.f))
                                             :std::clamp(std::sqrt(shown->exposure*invExposure),1.f,4.f),
                                       casting?&g_cast:nullptr,vertices[i],EasterSnow(p.portalId,now),
                                       FarWaterLevel(p,slot.field));

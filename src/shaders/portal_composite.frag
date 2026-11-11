@@ -720,7 +720,9 @@ void main() {
             return;
         }
         if(depthPass) {
-            if(alpha<0.5) discard;
+            // Wherever any of the lens is drawn, not only past half cover: the soft outer rim
+            // had no depth, and an altar's fire behind the portal blended over its edge (2026-11-10).
+            if(alpha<=0.004) discard;
             gl_FragDepth=clamp(hit,0.0,1.0);
             color=vec4(0.0);
             return;

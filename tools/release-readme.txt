@@ -1,4 +1,4 @@
-Town Portals 2.0.0 for Enshrouded
+Town Portals 2.0.1 for Enshrouded
 Saving your ass since 2026.
 
 Open a portal home from anywhere. Press T: after a short cast, a portal opens in front
@@ -21,7 +21,9 @@ HOW IT WORKS
   change, and you can walk round it to see more. People, animals and enemies near the far
   end show too (on a dedicated server, the server needs Town Portals 2.0 for that). While
   the far side loads, the portal shows its last picture of the place as if through water.
-  LiveView in town-portal.ini: Full (default), Balanced (no water in the far view), Fast
+  LiveView in town-portal.ini: Auto (default: live only with the game's Ultra Quality preset
+  on an NVIDIA card with 8 GB or more, else the still pictures), Full, Balanced (no water in
+  the far view), Fast
   (also no bounced light, darker) or Off (the 1.x still pictures, with depth as you
   move: no live view, no frame rate cost). The live view costs
   frame rate while a portal is on screen; Balanced, Fast or Off give some back.
@@ -78,7 +80,7 @@ Dedicated server (server admin only)
    On a rented server, upload the same files next to enshrouded_server.exe with the
    host's file manager (if it lets you add DLL files).
 
-Check: greeneye\loader.log has a line with "Town Portals 2.0.0" (the server's says
+Check: greeneye\loader.log has a line with "Town Portals 2.0.1" (the server's says
 "server companion loaded").
 Uninstall: delete greeneye\town-portal (and dbgcore.dll if no other Greeneye mod uses
 it), in the game folder and on the server.
@@ -86,7 +88,9 @@ it), in the game folder and on the server.
 SETTINGS: greeneye\town-portal\town-portal.ini (written on first start)
 [Portals] (the host's file: the dedicated server's, or the hosting player's)
   AllowInShroud=true, AllowInHollowHalls=true, DisableAutoClose=false
-  LiveView=Full          Full, Balanced, Fast or Off (each player's own: read from your file)
+  LiveView=Auto          Auto (live only with the Ultra Quality preset on an NVIDIA card with
+                         8 GB or more; else still pictures), Full, Balanced, Fast or Off
+                         (each player's own: read from your file)
 [Controls] (each player's own)
   OpenPortalKey=T        a letter, F1-F24, Mouse4, Mouse5, ... or a key code like 0x54
   InteractKey=Auto       the key that uses a portal: Auto follows the game's Interact key
@@ -102,7 +106,8 @@ KNOWN LIMITATIONS
   of that place, wavy, until then.
 - Things far from the portal's far end show in less detail, and some small effects can be
   missing there.
-- Other players standing at the far end have not been tested yet.
+- On a world you host, if the game still has too few task queues free for the live view,
+  portals there show their pictures instead.
 - Creatures by an open portal's far end stay while the portal is open, even with nobody there.
 - The world map is a painting: the portals' places on it are approximate.
 - The loading percentage is an estimate from the trip's stages, not the game's own count.
