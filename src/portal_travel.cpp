@@ -93,6 +93,7 @@ GateFn g_gate = nullptr;
 
 std::atomic<void*> g_client{nullptr};
 std::atomic<void*> g_server{nullptr};
+bool g_dedicatedServer = false; // enshrouded_server.exe, set once in Init
 std::atomic<uint64_t> g_localAccount{0};
 std::atomic<uint32_t> g_localEntity{0};
 std::atomic<uint32_t> g_observedHostEntity{0};
@@ -908,8 +909,20 @@ ObserversFn g_observers{};
 void* ObserversHook(void* block,uint8_t* ecs,uint8_t simd) {
     greeneye::Lease lease;
     if(lease&&ecs&&ecs[8]==0){ // the server's entities
-        PublishEnds();
         const uint64_t now=GetTickCount64();
+        // A portal whose owner left, or whose close never arrived, is closed here once nobody
+        // has rebroadcast it for 90 s, as every player's game already does (CloseSilentPortals
+        // runs in the game's UI tick, which a dedicated server has none of). Without this, a
+        // dedicated server kept portal ends open all night: their areas loaded, their creatures
+        // kept, and the owner's hot point held on a field end from hours before (Lo's server,
+        // 2026-11-11: an end from 18:29 still kept at 06:00).
+        // Dedicated server only: a game that hosts runs the check itself and must skip its own.
+        static uint64_t lastSilentCheck=0;
+        if(g_dedicatedServer&&now-lastSilentCheck>=1000){
+            lastSilentCheck=now;
+            CloseSilentPortals(0,90000);
+        }
+        PublishEnds();
         // Without a request, a player's hot point stays on the field end of their own open
         // portal: the area round it then stays loaded and its creatures alive while they are
         // away. Only while they looked through the portal was too late: an enemy by the far
@@ -1079,6 +1092,9 @@ void DestroyHook(uint8_t* ecs,uint32_t id,uint32_t mode,uint32_t flag) {
 // portal, across a cell border). The unload request FUN_140995310(ecs, cell) is refused here for
 // a cell within 120 m of an open portal end; the cell stays loaded and wanted, and the loader
 // asks again each tick (so it unloads as usual once the portal closes). Server entities only.
+// Refusing holds up nothing else (static check 2026-11-11): FUN_140a2b3d0 decides each cell on
+// its own, and the load (FUN_14095e320) and unload calls return at once for a cell already in
+// that state, so other cells keep loading while this one stays.
 using UnloadFn=uint64_t(*)(uint8_t* ecs,uint8_t* cell);
 UnloadFn g_unload{};
 bool CellRect(uint8_t* ecs,uint8_t* cell,float& x0,float& z0) {
@@ -1090,6 +1106,28 @@ bool CellRect(uint8_t* ecs,uint8_t* cell,float& x0,float& z0) {
         x0=float(index%cols)*256.f;z0=float(index/cols)*256.f;
         return true;
     }__except(EXCEPTION_EXECUTE_HANDLER){return false;}
+}
+// The loader asks to unload a far cell on every tick, so a kept cell is logged once, when it starts
+// being kept, and again only after a minute without a request. Logging every request flooded a
+// player's server log (Lo, 2026-11-11: 39,000 lines in 20 minutes, ~230 a second with four base
+// cells taking turns; loader 1.2.0 writes each line on the server's game thread).
+bool KeptAreaIsNew(float x0,float z0) {
+    struct Kept{float x,z;uint64_t seen;};
+    static Kept kept[32]{};
+    static SRWLOCK lock=SRWLOCK_INIT;
+    constexpr uint64_t kForgetMs=60000;
+    const uint64_t now=GetTickCount64();
+    AcquireSRWLockExclusive(&lock);
+    Kept* slot=nullptr;Kept* oldest=&kept[0];
+    for(auto& k:kept){
+        if(k.seen&&k.x==x0&&k.z==z0){slot=&k;break;}
+        if(k.seen<oldest->seen)oldest=&k; // an empty slot (seen 0) comes first
+    }
+    const bool fresh=!slot||now-slot->seen>kForgetMs;
+    if(!slot)slot=oldest;
+    *slot={x0,z0,now};
+    ReleaseSRWLockExclusive(&lock);
+    return fresh;
 }
 uint64_t UnloadHook(uint8_t* ecs,uint8_t* cell) {
     greeneye::Lease lease;
@@ -1103,16 +1141,14 @@ uint64_t UnloadHook(uint8_t* ecs,uint8_t* cell) {
             const float dz=std::max({z0-ez,0.f,ez-(z0+256.f)});
             if(dx*dx+dz*dz<120.f*120.f){keep=true;px=ex;pz=ez;}
         }
-        if(keep){
-            static float lastX=-1,lastZ=-1;
-            if(lastX!=x0||lastZ!=z0){
-                lastX=x0;lastZ=z0;
+        if(keep&&KeptAreaIsNew(x0,z0)){
+            {
                 char line[160]{};
                 std::snprintf(line,sizeof(line),"Town Portal: the area %.0f, %.0f stays loaded for the portal end at %.0f, %.0f",x0,z0,px,pz);
                 Log(line);
             }
-            return 0;
         }
+        if(keep)return 0;
     }
     return g_unload(ecs,cell);
 }
@@ -1475,6 +1511,7 @@ KeptPortals* KeptPortalBlock() {
 }
 
 bool Init(const GreeneyeHost* host) {
+    g_dedicatedServer = host->side == kGreeneyeServer;
     auto* p = host->find(kPlayerPattern, nullptr);
     auto* a = host->find(kApplyPattern, nullptr);
     auto* n = host->find(kNextPattern, nullptr);

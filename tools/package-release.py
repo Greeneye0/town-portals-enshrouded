@@ -22,7 +22,7 @@ dll = root / "bin/loader/town-portal.dll"
 assert json.loads((root / "bin/loader/mod.json").read_text())["version"] == version, "build.bat first"
 # The Greeneye loader this release ships.
 loader = pathlib.Path(r"C:\Users\vansa\EnshroudedMods\GreeneyeLoader\bin\dbgcore.dll")
-assert b"1.2.2" in loader.read_bytes(), "not loader 1.2.2"
+assert b"1.2.3" in loader.read_bytes(), "not loader 1.2.3"
 for side in ("client", "server"):
     folder = destination / side / "greeneye/town-portal"
     folder.mkdir(parents=True)

@@ -2562,7 +2562,7 @@ GREENEYE_MOD_START {
     portal::rules::AddPortalsKey(L"NoFun", portal::rules::kNoFunKey);
 
     if (serverSide) {
-        Log("Town Portals 2.0.1: server companion loaded");
+        Log("Town Portals 2.0.2: server companion loaded");
         return true;
     }
 
@@ -2628,7 +2628,7 @@ GREENEYE_MOD_START {
     portal::casting::Init(host);
     LogGraphicsAdapters();
 
-    Log("Town Portals 2.0.1: press T or LB+Y on a controller (OpenPortalKey in town-portal.ini) to open a portal to your Preferred Spawn Flame Altar");
+    Log("Town Portals 2.0.2: press T or LB+Y on a controller (OpenPortalKey in town-portal.ini) to open a portal to your Preferred Spawn Flame Altar");
     return true;
 }
 

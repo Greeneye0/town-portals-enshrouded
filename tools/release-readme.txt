@@ -1,4 +1,4 @@
-Town Portals 2.0.1 for Enshrouded
+Town Portals 2.0.2 for Enshrouded
 Saving your ass since 2026.
 
 Open a portal home from anywhere. Press T: after a short cast, a portal opens in front
@@ -80,7 +80,7 @@ Dedicated server (server admin only)
    On a rented server, upload the same files next to enshrouded_server.exe with the
    host's file manager (if it lets you add DLL files).
 
-Check: greeneye\loader.log has a line with "Town Portals 2.0.1" (the server's says
+Check: greeneye\loader.log has a line with "Town Portals 2.0.2" (the server's says
 "server companion loaded").
 Uninstall: delete greeneye\town-portal (and dbgcore.dll if no other Greeneye mod uses
 it), in the game folder and on the server.
@@ -118,6 +118,8 @@ KNOWN LIMITATIONS
 TROUBLESHOOTING / BUG REPORTS
 Town Portals writes to greeneye\loader.log in the game folder (lines starting with
 "Town Portal"), and on a dedicated server to greeneye\loader.log in the server's folder.
+loader.log starts fresh each time the game or server starts and rolls over at 10 MB
+(the earlier part moves to loader.old.log), so a long session keeps its last 10-20 MB.
 Please attach it to a bug report, with a screenshot if it is visual.
 
 THANKS
