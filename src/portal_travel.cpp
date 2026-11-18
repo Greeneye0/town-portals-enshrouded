@@ -878,6 +878,28 @@ void UpsertPortalLocked(const PortalInstance& instance) {
 // portal were despawned, 2026-11-10). Written once a tick by ObserversHook into the spare of two
 // buffers, then published by index; readers copy without a lock.
 struct EndList {uint32_t count;float xyz[32][3];};
+// Who shows portals live. Keeping a portal's far side alive (hot point, loaded areas, kept
+// creatures) only serves a player whose portal shows it live; for a player on still pictures it
+// just left far-off entities known to their game while they were kilometres away, and players
+// on pictures were the ones who came back to invisible doors, chests and enemies (Nexus bug
+// 1171954, 2026-11-12..16). So that work is done only for a player who asked for a far view
+// ("/tpv1", sent only while a live view is drawn) in the last 30 minutes, and for a portal
+// somebody asked to look through in that time.
+constexpr uint64_t kLiveViewerMs=30ull*60*1000;
+std::atomic<uint64_t> g_liveSeen[16]{};
+struct SlotLive {std::atomic<uint64_t> portalId{},tick{};};
+SlotLive g_slotLive[kMaxPortals];
+bool LiveViewer(uint32_t playerId,uint64_t now) {
+    if(playerId<1||playerId>16)return false;
+    const uint64_t seen=g_liveSeen[playerId-1].load();
+    return seen&&now-seen<kLiveViewerMs;
+}
+bool LivePortal(const PortalInstance& slot,uint64_t now) {
+    if(LiveViewer(slot.ownerPlayerId,now))return true;
+    const SlotLive& live=g_slotLive[&slot-g_portals];
+    const uint64_t tick=live.tick.load();
+    return tick&&live.portalId.load()==slot.portalId&&now-tick<kLiveViewerMs;
+}
 EndList g_endLists[2]{};
 std::atomic<uint32_t> g_endCurrent{0};
 std::atomic<uint64_t> g_endTick{0};
@@ -886,8 +908,9 @@ void PublishEnds() {
     std::lock_guard guard(g_lock,std::adopt_lock);
     EndList& next=g_endLists[g_endCurrent.load()^1u];
     next.count=0;
+    const uint64_t now=GetTickCount64();
     for(const auto& slot:g_portals){
-        if(!slot.active||slot.closing)continue;
+        if(!slot.active||slot.closing||!LivePortal(slot,now))continue;
         for(const auto* end:{&slot.fieldEnd,&slot.baseEnd}){
             if((!end->pos.x&&!end->pos.z)||next.count>=32)continue;
             next.xyz[next.count][0]=end->wx;next.xyz[next.count][1]=end->wy;next.xyz[next.count][2]=end->wz;++next.count;
@@ -904,6 +927,84 @@ EndList CurrentEnds() {
 }
 struct HotPoint {std::atomic<int32_t> x{},z{};std::atomic<uint64_t> until{};};
 HotPoint g_hot[16];
+// How much of the world the game sends each player. The server keeps a factor per player
+// (player state +0x125844, 1.0 down to 0.1) that scales the 100 / 200 m radius within which a
+// player is sent entities, round the player and round their hot point alike. It falls by 0.05
+// a second while a load byte (+0x125840) is at 0xf9 or more and rises again once that has been
+// at 0xf1 or less for 10 s (FUN_140a1f8f0; states at +0x125828). The states: 16 of 0x125850
+// bytes in the block at ecs +0x7bc2c8 ({+8 data, +0x10 count}); byte 0 in use, byte 4 the
+// player's index. A second place to send (a portal's far end) adds to that load; with the
+// factor at 0.1 a player gets only what is within 10 m: doors, chests and enemies further off
+// are not sent, though they are there (suspected cause of Nexus bug 1171954; logged to find out).
+// Read only, once a second; a line when a player's factor has moved by 0.1 or reaches an end.
+// The load byte is not the server's own measure: it arrives in a message from that player's
+// game (stored at exe+0x9c627c), so it says how full something is on their PC, and differs
+// from player to player on one server. While a player's factor is under 1 their hot point is
+// left to the game (g_sendShrunk): no second area for a game that already can't keep up.
+std::atomic<bool> g_sendShrunk[16]{};
+struct SendWatch {float factor[64];uint8_t load[64],mode[64],used[64],index[64];uint32_t count;};
+bool ReadSendWatch(uint8_t* ecs,SendWatch& out) {
+    __try{
+        auto* block=*reinterpret_cast<uint8_t**>(ecs+0x7bc2c8);
+        if(!block)return false;
+        auto* data=*reinterpret_cast<uint8_t**>(block+8);
+        const uint32_t count=*reinterpret_cast<uint32_t*>(block+0x10);
+        if(!data||!count||count>64)return false;
+        out.count=uint32_t(count);
+        for(uint32_t i=0;i<out.count;++i){
+            const uint8_t* state=data+size_t(i)*0x125850;
+            out.used[i]=state[0];out.index[i]=state[4];out.load[i]=state[0x125840];out.mode[i]=state[0x125828];
+            out.factor[i]=*reinterpret_cast<const float*>(state+0x125844);
+        }
+        return true;
+    }__except(EXCEPTION_EXECUTE_HANDLER){return false;}
+}
+void WatchSendRadius(uint8_t* ecs,uint64_t now) {
+    static uint64_t next=0,lastAll=0;static float logged[64];static bool primed=false;
+    if(now<next)return;
+    next=now+1000;
+    if(!primed){primed=true;for(float& f:logged)f=1.f;}
+    SendWatch w{};
+    if(!ReadSendWatch(ecs,w)){
+#ifdef TOWN_PORTAL_DEV
+        static bool told=false;
+        if(!told){told=true;Log("Town Portal (dev): send radius: player states not readable");}
+#endif
+        return;
+    }
+    bool all=false;
+#ifdef TOWN_PORTAL_DEV
+    if(now-lastAll>=10000){lastAll=now;all=true;} // dev: every 10 s, to see the load byte move
+#endif
+    bool shrunk[16]{};
+    for(uint32_t i=0;i<w.count;++i)
+        if(w.used[i]&&w.index[i]<16&&w.factor[i]>=0.05f&&w.factor[i]<0.999f)shrunk[w.index[i]]=true;
+    for(int i=0;i<16;++i)g_sendShrunk[i]=shrunk[i];
+    for(uint32_t i=0;i<w.count;++i){
+        if(!w.used[i]){
+#ifdef TOWN_PORTAL_DEV
+#endif
+            logged[i]=1.f;continue;
+        }
+        const float f=w.factor[i];
+#ifdef TOWN_PORTAL_DEV
+        if(all&&!(f>=0.05f&&f<=1.05f)){
+            char raw[160]{};
+            std::snprintf(raw,sizeof(raw),"Town Portal (dev): send radius: state %u of %u: used %u index %u factor %g load %u",i,w.count,unsigned(w.used[i]),unsigned(w.index[i]),double(f),unsigned(w.load[i]));
+            Log(raw);
+        }
+#endif
+        if(!(f>=0.05f&&f<=1.05f))continue; // not the layout this was read from
+        const bool moved=std::fabs(f-logged[i])>=0.1f||(f>=0.999f)!=(logged[i]>=0.999f)||(f<=0.101f)!=(logged[i]<=0.101f);
+        if(!moved&&!all)continue;
+        if(moved)logged[i]=f;
+        char line[200]{};
+        std::snprintf(line,sizeof(line),"Town Portal: the game sends player %u what is within %.0f m (factor %.2f, load %u of 255, state %u)%s",
+                      unsigned(w.index[i])+1u,double(f)*100.0,double(f),unsigned(w.load[i]),unsigned(w.mode[i]),
+                      f<0.999f?"; things further off are missing for them":"");
+        Log(line);
+    }
+}
 using ObserversFn=void*(*)(void* block,uint8_t* ecs,uint8_t simd);
 ObserversFn g_observers{};
 void* ObserversHook(void* block,uint8_t* ecs,uint8_t simd) {
@@ -922,7 +1023,17 @@ void* ObserversHook(void* block,uint8_t* ecs,uint8_t simd) {
             lastSilentCheck=now;
             CloseSilentPortals(0,90000);
         }
+        bool switchesChanged=false;
+        const rules::ServerSwitches switches=rules::Server(&switchesChanged);
+        if(switchesChanged){
+            char line[160]{};
+            std::snprintf(line,sizeof(line),"Town Portal: town-portal.ini ServerKeepAreas=%s ServerKeepCreatures=%s ServerFarView=%s",
+                          switches.keepAreas?"true":"false",switches.keepCreatures?"true":"false",switches.farView?"true":"false");
+            Log(line);
+        }
         PublishEnds();
+        WatchSendRadius(ecs,now);
+        if(!switches.farView)return g_observers(block,ecs,simd); // ServerFarView=false: hot points left to the game
         // Without a request, a player's hot point stays on the field end of their own open
         // portal: the area round it then stays loaded and its creatures alive while they are
         // away. Only while they looked through the portal was too late: an enemy by the far
@@ -931,7 +1042,7 @@ void* ObserversHook(void* block,uint8_t* ecs,uint8_t simd) {
         if(g_lock.try_lock()){
             std::lock_guard guard(g_lock,std::adopt_lock);
             for(const auto& slot:g_portals){
-                if(!slot.active||slot.closing||slot.ownerPlayerId<1||slot.ownerPlayerId>16)continue;
+                if(!slot.active||slot.closing||!LiveViewer(slot.ownerPlayerId,now))continue; // live viewers only
                 if(!slot.fieldEnd.pos.x&&!slot.fieldEnd.pos.z)continue;
                 const int i=int(slot.ownerPlayerId)-1;
                 own[i][0]=int32_t(std::floor(slot.fieldEnd.wx));own[i][1]=int32_t(std::floor(slot.fieldEnd.wz));hasOwn[i]=true;
@@ -940,6 +1051,7 @@ void* ObserversHook(void* block,uint8_t* ecs,uint8_t simd) {
         for(int i=0;i<16;++i){
             const bool asked=g_hot[i].until.load()>now;
             if(!asked&&!hasOwn[i])continue;
+            if(g_sendShrunk[i].load())continue; // the game is already sending this player less
             uint8_t* point=ecs+0x7ddc10+size_t(i)*0xc;
             if(point[8])continue;
             if(!asked){
@@ -982,6 +1094,7 @@ uint64_t GatherHook(int64_t* list,void* query) {
     NoteTransformType(query);
     const uint64_t result=g_gather(list,query);
     if(!lease||!list||from!=g_despawnReturn)return result;
+    if(!rules::Server().keepCreatures){g_keptAlive=0;return result;} // ServerKeepCreatures=false
     const EndList ends=CurrentEnds();
     uint32_t added=0;
     for(uint32_t k=0;k<ends.count;++k){
@@ -1132,7 +1245,7 @@ bool KeptAreaIsNew(float x0,float z0) {
 uint64_t UnloadHook(uint8_t* ecs,uint8_t* cell) {
     greeneye::Lease lease;
     float x0=0,z0=0;
-    if(lease&&ecs&&cell&&ecs[8]==0&&CellRect(ecs,cell,x0,z0)){
+    if(lease&&ecs&&cell&&ecs[8]==0&&rules::Server().keepAreas&&CellRect(ecs,cell,x0,z0)){ // ServerKeepAreas
         bool keep=false;float px=0,pz=0;
         const EndList ends=CurrentEnds();
         for(uint32_t k=0;k<ends.count&&!keep;++k){
@@ -1156,19 +1269,24 @@ uint64_t UnloadHook(uint8_t* ecs,uint8_t* cell) {
 void SetFarView(uint32_t playerId,int x,int z) {
     if(playerId<1||playerId>16||!g_observers)return;
     bool close=false;
+    const uint64_t now=GetTickCount64();
     {
         std::lock_guard guard(g_lock);
         for(const auto& slot:g_portals){
             if(!slot.active)continue;
             for(const auto* end:{&slot.fieldEnd,&slot.baseEnd}){
                 const float dx=end->wx-float(x),dz=end->wz-float(z);
-                if(dx*dx+dz*dz<60.0f*60.0f)close=true;
+                if(dx*dx+dz*dz<60.0f*60.0f){
+                    close=true;
+                    SlotLive& live=g_slotLive[&slot-g_portals];
+                    live.portalId=slot.portalId;live.tick=now;
+                }
             }
         }
     }
     if(!close)return;
+    g_liveSeen[playerId-1]=now;
     auto& hot=g_hot[playerId-1];
-    const uint64_t now=GetTickCount64();
     if(hot.until.load()<=now){
         char line[120]{};
         std::snprintf(line,sizeof(line),"Town Portal: player %u looks through a portal; entities round %d, %d are sent to them too",playerId,x,z);
@@ -1262,6 +1380,33 @@ int HandleProtocolChat(void* store, uint8_t type, uint64_t* text, uint32_t sende
         if (isClientStore) {
             auto ownHandle = at<uint32_t>(cl, 0x466b44);
             if (ownHandle && senderHandle == ownHandle) rules::SetHost(hostRules);
+        }
+        return 2;
+    }
+
+    // Host info: a client asks (/tph3), the host answers with its version and server switches
+    // (/tps3 <version> <bits>); the client writes them to its log when they change.
+    if (line == rules::kInfoAsk) {
+        if (!isClientStore) {
+            int n = rules::FormatInfo(answer, capacity);
+            return n > 0 && size_t(n) < capacity ? 1 : 2;
+        }
+        return 2;
+    }
+    if (rules::HostInfo info{}; rules::ParseInfo(line, info)) {
+        if (isClientStore) {
+            auto ownHandle = at<uint32_t>(cl, 0x466b44);
+            if (ownHandle && senderHandle == ownHandle) {
+                static char last[200]{};
+                char text[200]{};
+                std::snprintf(text, sizeof(text), "Town Portal: host runs %s, ServerKeepAreas=%s ServerKeepCreatures=%s ServerFarView=%s",
+                              info.version, info.bits & 1u ? "true" : "false", info.bits & 2u ? "true" : "false", info.bits & 4u ? "true" : "false");
+                rules::g_hostInfoKnown = true;
+                if (rules::g_hostInfoLogNext.exchange(false) || std::strcmp(last, text) != 0) {
+                    std::memcpy(last, text, sizeof(last));
+                    Log(text);
+                }
+            }
         }
         return 2;
     }
@@ -1578,6 +1723,7 @@ bool Init(const GreeneyeHost* host) {
     if(auto* unload=host->find("48 89 5C 24 10 56 48 83 EC 30 80 7A 01 00",nullptr))
         g_unload=reinterpret_cast<UnloadFn>(host->hook(unload,reinterpret_cast<void*>(UnloadHook),14,nullptr,0));
     Log(g_unload?"Town Portal: areas next to open portals stay loaded":"Town Portal: area unload not found; areas next to portals may unload");
+    rules::AddPortalsKey(L"ServerKeepAreas", rules::kServerSwitchesBlock); // existing files get the three switches
 #ifdef TOWN_PORTAL_DEV
     if(auto* destroy=static_cast<uint8_t*>(host->find("48 89 5C 24 18 48 89 74 24 20 89 54 24 10 55 57 41 55",nullptr))){
         uint8_t call[5]{};host->read(destroy+0x45,call,5);

@@ -20,4 +20,6 @@ bool RenderReady();
 // for a while keeps the native features off on that build at the next start.
 bool Tripped();
 void NoteStablePlay();
+// Called from DllMain when the process exits normally; marks the session safe unless the game wrote a crash dump.
+void NoteCleanExit();
 }

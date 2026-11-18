@@ -326,6 +326,52 @@ inline bool NoFun() {
     return on;
 }
 
+// [Portals] switches for the host's own work round open portals, each on unless set to false,
+// read again at most once a second, so a server admin can switch one off while the world runs.
+// Added for a player who kept getting out of sync on a dedicated server (Lomack, 2026-11-12):
+// switching them off one at a time shows whether one of them causes it.
+struct ServerSwitches {
+    bool keepAreas = true;     // ServerKeepAreas: the areas round a portal's ends stay loaded
+    bool keepCreatures = true; // ServerKeepCreatures: creatures by a portal's ends are not despawned
+    bool farView = true;       // ServerFarView: a player's second view point (hot point) on their portal
+};
+inline constexpr const char* kServerSwitchesBlock =
+    "; The host's work round open portals, each on (true) unless set to false. Changes apply\n"
+    "; within a second, without a restart. ServerKeepAreas: the areas by a portal's ends stay\n"
+    "; loaded. ServerKeepCreatures: creatures by a portal's ends are not despawned while nobody\n"
+    "; is there. ServerFarView: the host also sends each player what is round the far end of\n"
+    "; their portal. Switch one off if players get out of sync on your server.\n"
+    "ServerKeepAreas=true\n"
+    "ServerKeepCreatures=true\n"
+    "ServerFarView=true\n";
+// Bits: 1 keepAreas, 2 keepCreatures, 4 farView; 0x80 = read at least once. One atomic, as the
+// creature check calls this from several worker threads at once.
+inline std::atomic<uint32_t>& ServerSwitchBits() { static std::atomic<uint32_t> bits{0}; return bits; }
+inline ServerSwitches FromSwitchBits(uint32_t b) { return {(b & 1u) != 0, (b & 2u) != 0, (b & 4u) != 0}; }
+// Re-reads the file at most once a second (one thread at a time; the others use the last read).
+// changed is set when the values differ from the last read (or on the first), for the caller to log.
+inline ServerSwitches Server(bool* changed = nullptr) {
+    static std::atomic<uint64_t> readAt{0};
+    static std::atomic<bool> reading{false};
+    const uint64_t now = GetTickCount64();
+    const uint64_t last = readAt.load();
+    uint32_t bits = ServerSwitchBits().load();
+    if ((last && now - last <= 1000) || reading.exchange(true)) return FromSwitchBits(bits | (bits ? 0u : 7u));
+    readAt = now;
+    const std::wstring path = Path();
+    auto flag = [&](const wchar_t* key) {
+        wchar_t value[16]{};
+        GetPrivateProfileStringW(L"Portals", key, L"true", value, 16, path.c_str());
+        return !(!_wcsicmp(value, L"false") || !_wcsicmp(value, L"0") || !_wcsicmp(value, L"no") || !_wcsicmp(value, L"off"));
+    };
+    const uint32_t next = 0x80u | (flag(L"ServerKeepAreas") ? 1u : 0u) | (flag(L"ServerKeepCreatures") ? 2u : 0u) |
+                          (flag(L"ServerFarView") ? 4u : 0u);
+    if (changed) *changed = next != bits;
+    ServerSwitchBits() = next;
+    reading = false;
+    return FromSwitchBits(next);
+}
+
 // This machine's file, read again at most once a second (the travel prompt asks every frame).
 inline Rules Local() {
     static Rules rules{};
@@ -370,5 +416,40 @@ inline Rules Current(bool hostsWorld) {
     if (hostsWorld) return Local();
     return g_hostKnown.load() ? FromBits(g_hostBits.load()) : Rules{};
 }
+
+// Host info: a client asks ("/tph3"), the host answers "/tps3 <version> <switch bits>" (bits as
+// ServerSwitchBits: 1 keepAreas, 2 keepCreatures, 4 farView), and the client writes it to its
+// own loader.log: which build the host runs and which switches are in force there. A new
+// message, as 2.0.2 clients reject a rules answer (/tps2) with more than their three bits.
+// A host of 2.0.2 or older never answers.
+inline constexpr char kModVersion[] = "2.0.3";
+inline constexpr std::string_view kInfoAsk = "/tph3";
+inline constexpr std::string_view kInfoPrefix = "/tps3 ";
+struct HostInfo { char version[16]{}; uint32_t bits = 7; };
+inline int FormatInfo(char* buf, size_t cap) {
+    const uint32_t bits = ServerSwitchBits().load();
+    return std::snprintf(buf, cap, "%.*s%s %u", int(kInfoPrefix.size()), kInfoPrefix.data(), kModVersion, bits ? bits & 7u : 7u);
+}
+inline bool ParseInfo(std::string_view line, HostInfo& out) {
+    if (!line.starts_with(kInfoPrefix)) return false;
+    line.remove_prefix(kInfoPrefix.size());
+    const size_t space = line.find(' ');
+    if (space == std::string_view::npos || space == 0 || space >= sizeof(out.version)) return false;
+    for (size_t i = 0; i < space; ++i) {
+        const char c = line[i];
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '.' || c == '-' || c == '+')) return false;
+        out.version[i] = c;
+    }
+    out.version[space] = 0;
+    line.remove_prefix(space + 1);
+    if (line.size() != 1 || line[0] < '0' || line[0] > '7') return false;
+    out.bits = uint32_t(line[0] - '0');
+    return true;
+}
+// Client side: whether the host has answered in this world, and whether the next answer is
+// logged even if it repeats the last (after joining a world).
+inline std::atomic<bool> g_hostInfoKnown{false};
+inline std::atomic<bool> g_hostInfoLogNext{true};
+inline void ForgetHostInfo() { g_hostInfoKnown = false; g_hostInfoLogNext = true; }
 
 } // namespace portal::rules

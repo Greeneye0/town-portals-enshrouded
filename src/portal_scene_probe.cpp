@@ -4932,7 +4932,9 @@ void MotionRecord(void* scope,uint8_t* state,uint8_t* inputs,const ImageView& de
     const bool havePrev=prevTick&&now-prevTick<200;
     const ImageView motion=At<ImageView>(inputs,0x30);
     const auto info=InspectImage(motion),depthInfo=InspectImage(depth);
-    if(havePrev&&g_motion&&g_motion->pipeline&&!g_motion->error&&g_motionCount&&std::fabs(projection[11])>1e-6f&&
+    uint32_t liveSlots=0;
+    for(uint32_t i=0;i<g_motionCount;++i)liveSlots+=g_motionSlots[i].live?1u:0u;
+    if(havePrev&&g_motion&&g_motion->pipeline&&!g_motion->error&&liveSlots&&std::fabs(projection[11])>1e-6f&&
        info.valid&&info.format==78&&(info.usage&8)&&info.width==depthInfo.width&&info.height==depthInfo.height){
         // World to the previous frame's clip x, y, w, without its jitter.
         float before[16];std::memcpy(before,prevProjection,sizeof(before));before[8]=before[9]=0;
@@ -4986,6 +4988,7 @@ void MotionRecord(void* scope,uint8_t* state,uint8_t* inputs,const ImageView& de
         auto* graph=At<uint8_t*>(scope,0);
         for(uint32_t i=0;i<g_motionCount;++i){
             const auto& m=g_motionSlots[i];
+            if(!m.live)continue; // a still picture: no motion written (see the slot's comment)
             // Portal metres (right, up, normal from the endpoint's centre) to that clip space.
             const double basis[4][4]={{m.end.rx,0,m.end.rz,0},{0,1,0,0},{m.end.nx,0,m.end.nz,0},{m.end.wx,m.end.wy+1.62f,m.end.wz,1}};
             float rows[12]{};
@@ -5186,7 +5189,15 @@ bool OwnedPortalDraw(void* scope,uint8_t* state,uint8_t* inputs) {
     const uint8_t attachment[]={1,1,0};
     Native<void(*)(void*,const void*,const void*,const char*)>(0x6c340)(scope,&color,attachment,"town portal in portal");
     const float invExposure=g_givenColor?g_givenInvExposure:At<float>(inputs,0x9c);
-    const uint32_t motionKept=g_motionCount;
+    // The draw below refills the frame's portal list (CompositeRecord); the main frame's depth
+    // passes still read it afterwards (the half-size depth for the effects), so all of it comes
+    // back: restoring only the count left the inner portal's outline in place of the portals
+    // here, and an altar flame showed through another player's portal (user, 2026-11-11).
+    const uint32_t motionKept=g_motionCount,swirlKept=g_swirlCount;
+    static MotionSlot motionSaved[std::size(g_motionSlots)];
+    static float swirlSaved[std::size(g_swirlVertices)][3*kVertexFloats];
+    std::memcpy(motionSaved,g_motionSlots,sizeof(motionSaved));
+    std::memcpy(swirlSaved,g_swirlVertices,sizeof(swirlSaved));
     g_innerDraw=GetFileAttributesW(L"C:/Mods/Enshrouded/TownPortal/tools/inner.mist")==INVALID_FILE_ATTRIBUTES;
     CompositeRecord(scope,state,depth,true,slots,count,now,std::isfinite(invExposure)&&invExposure>0?invExposure:0.f);
     g_innerDraw=false;
@@ -5200,7 +5211,9 @@ bool OwnedPortalDraw(void* scope,uint8_t* state,uint8_t* inputs) {
         std::snprintf(line,sizeof(line),"Town Portal: portal in portal: far depth format %u (%ux%u), depth pass made for %u (pipeline %d), drawn slots %u, frames %llu",
             depthInfo.format,depthInfo.width,depthInfo.height,g_depthPass?g_depthPass->madeFor:0u,int(g_depthPass&&g_depthPass->pipeline),g_motionCount,g_depthPass?g_depthPass->frames:0ull);
         greeneye::Host()->log(line);}}
-    g_motionCount=motionKept;
+    g_motionCount=motionKept;g_swirlCount=swirlKept;
+    std::memcpy(g_motionSlots,motionSaved,sizeof(motionSaved));
+    std::memcpy(g_swirlVertices,swirlSaved,sizeof(swirlSaved));
     static bool told=false;
     if(!told){told=true;greeneye::Host()->log("Town Portal: live view: the far view shows the portal too (a portal seen through a portal)");}
     return true;

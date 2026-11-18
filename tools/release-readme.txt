@@ -1,4 +1,4 @@
-Town Portals 2.0.2 for Enshrouded
+Town Portals 2.0.3 for Enshrouded
 Saving your ass since 2026.
 
 Open a portal home from anywhere. Press T: after a short cast, a portal opens in front
@@ -80,7 +80,7 @@ Dedicated server (server admin only)
    On a rented server, upload the same files next to enshrouded_server.exe with the
    host's file manager (if it lets you add DLL files).
 
-Check: greeneye\loader.log has a line with "Town Portals 2.0.2" (the server's says
+Check: greeneye\loader.log has a line with "Town Portals 2.0.3" (the server's says
 "server companion loaded").
 Uninstall: delete greeneye\town-portal (and dbgcore.dll if no other Greeneye mod uses
 it), in the game folder and on the server.
@@ -88,6 +88,12 @@ it), in the game folder and on the server.
 SETTINGS: greeneye\town-portal\town-portal.ini (written on first start)
 [Portals] (the host's file: the dedicated server's, or the hosting player's)
   AllowInShroud=true, AllowInHollowHalls=true, DisableAutoClose=false
+  ServerKeepAreas=true, ServerKeepCreatures=true, ServerFarView=true
+                         the host's work round open portals (keep the areas by a portal's
+                         ends loaded, keep the creatures there, send each player what is
+                         round their portal's far end). Set one to false if players get out
+                         of sync on your server; changes apply within a second. Each
+                         player's loader.log shows what the host uses ("host runs ...").
   LiveView=Auto          Auto (live only with the Ultra Quality preset on an NVIDIA card with
                          8 GB or more; else still pictures), Full, Balanced, Fast or Off
                          (each player's own: read from your file)

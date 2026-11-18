@@ -1161,6 +1161,29 @@ void AskHostRules(void* gameClient, void* currentWorld) {
         askAt = now + 3000;
         portal::rules::ForgetHost();
     }
+    // The host's version and server switches (/tph3), a second after each rules ask, for this
+    // game's log. A host of 2.0.2 or older never answers: three asks, one line, then no more.
+    static void* infoWorld = nullptr;
+    static uint64_t infoAt = 0;
+    static int infoAsked = 0;
+    if (infoWorld != currentWorld) {
+        infoWorld = currentWorld;
+        infoAt = now + 4000;
+        infoAsked = 0;
+        portal::rules::ForgetHostInfo();
+    }
+    if (currentWorld && !portal::travel::HostsWorld() && portal::travel::HostAnswered() && now >= infoAt) {
+        const bool known = portal::rules::g_hostInfoKnown.load();
+        if (known) infoAsked = 0;
+        if (known || infoAsked < 3) {
+            ++infoAsked;
+            infoAt = now + 20000;
+            SendHiddenLine(gameClient, portal::rules::kInfoAsk);
+        } else if (infoAsked == 3) {
+            ++infoAsked;
+            Log("Town Portal: host did not say which version it runs; it is 2.0.2 or older (its server switches, if any, are not known here)");
+        }
+    }
     if (!currentWorld || portal::travel::HostsWorld() || now < askAt) return;
     askAt = now + 20000;
     SendHiddenLine(gameClient, portal::rules::kAsk);
@@ -2562,7 +2585,7 @@ GREENEYE_MOD_START {
     portal::rules::AddPortalsKey(L"NoFun", portal::rules::kNoFunKey);
 
     if (serverSide) {
-        Log("Town Portals 2.0.2: server companion loaded");
+        Log("Town Portals 2.0.3: server companion loaded");
         return true;
     }
 
@@ -2628,7 +2651,7 @@ GREENEYE_MOD_START {
     portal::casting::Init(host);
     LogGraphicsAdapters();
 
-    Log("Town Portals 2.0.2: press T or LB+Y on a controller (OpenPortalKey in town-portal.ini) to open a portal to your Preferred Spawn Flame Altar");
+    Log("Town Portals 2.0.3: press T or LB+Y on a controller (OpenPortalKey in town-portal.ini) to open a portal to your Preferred Spawn Flame Altar");
     return true;
 }
 
@@ -2637,9 +2660,11 @@ GREENEYE_MOD_HOT {
     return &kHotApi;
 }
 
-BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID) {
+BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved) {
     if (reason == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(instance);
     }
+    // reserved is non-null when the whole process is exiting, null for a FreeLibrary (hot reload).
+    if (reason == DLL_PROCESS_DETACH && reserved) portal::natives::NoteCleanExit();
     return TRUE;
 }

@@ -144,8 +144,11 @@ bool CompositeAllowed() {
 struct CompositeSlot {PortalInstance portal{};bool field{};uint32_t tint=colors::kUnknown;};
 // The endpoints the last in-frame record drew with a view of the other side: their vertices,
 // that view's picture and where they stand, for the motion pass (MotionRecord).
-struct MotionSlot {float vertices[3*kVertexFloats];ImageView image;PortalEndpoint end;};
-MotionSlot g_motionSlots[2]{};
+struct MotionSlot {float vertices[3*kVertexFloats];ImageView image;PortalEndpoint end;bool live;};
+// One per drawn portal end with a picture: the depth passes (DepthRecord, the half-size depth for
+// the effects) write only these. Two dropped the nearer ones with three or more portals in view,
+// and a flame showed through them (user, 2026-11-11).
+MotionSlot g_motionSlots[kCompositeSlots]{};
 uint32_t g_motionCount{};
 CompositeSlot g_compositeSlots[kCompositeSlots]{};
 uint32_t g_compositeSlotCount{};
@@ -536,9 +539,17 @@ void CompositeRecord(void* pass,void* state,const ImageView& depth,bool inFrame,
         if(inFrame&&!lightOnly&&!snapshot[i]&&g_swirlCount<std::size(g_swirlVertices)&&g_target&&g_target->color.context){
             std::memcpy(g_swirlVertices[g_swirlCount++],vertices[i],sizeof(vertices[i]));
         }
+        // One per drawn portal end with a picture, for the depth passes and the motion pass.
+        // Motion itself is written for a live frame only (live, read by MotionRecord). A still
+        // picture is traced from close to where it was taken, so what it shows moves on screen
+        // with the portal, not like the far side itself; with the far side's motion written, the
+        // game's anti-aliasing threw its history away and the picture crawled ("the portal
+        // twitches", Nexus 2026-11-11..12; measured 2026-11-17: half the frame-to-frame change
+        // with the pass off). The slot stays for a still picture: the depth passes need it
+        // (2.0.3's first build left it out, and they skipped still-picture portals).
         if(inFrame&&!lightOnly&&snapshot[i]&&g_motionCount<std::size(g_motionSlots)){
             auto& m=g_motionSlots[g_motionCount++];
-            std::memcpy(m.vertices,vertices[i],sizeof(m.vertices));m.image=snapshot[i]->image;
+            std::memcpy(m.vertices,vertices[i],sizeof(m.vertices));m.image=snapshot[i]->image;m.live=IsLiveSnapshot(snapshot[i]);
             m.end=slots[i].field?slots[i].portal.fieldEnd:slots[i].portal.baseEnd;
         }
         renderedPortal[renderedCount]=slots[i].portal.portalId;

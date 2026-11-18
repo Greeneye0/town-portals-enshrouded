@@ -22,6 +22,7 @@ struct Entry {
 Entry g_entries[] = {PORTAL_NATIVE_TABLE(PORTAL_NATIVE_ENTRY)};
 #undef PORTAL_NATIVE_ENTRY
 bool g_renderReady = false, g_tripped = false, g_armed = false;
+FILETIME g_armedAt{};
 
 std::vector<int> Parse(const char* text) {
     std::vector<int> bytes;
@@ -91,11 +92,30 @@ void CheckCrashGuard(const GreeneyeHost* host) {
     // A generation after the first is a reload, not a new session.
     if (same && std::strstr(line, "running") && host->generation <= 1) {
         g_tripped = true;
-        host->log("Town Portal: the last session on this untested game build ended early, so the native features stay off on it; delete greeneye\\town-portal\\untested-build.txt to try again");
+        host->log("Town Portal: the last session on this untested game build crashed or was cut off (it never closed normally or played 2 minutes), so the native features stay off on it; delete greeneye\\town-portal\\untested-build.txt to try again");
         return;
     }
     WriteGuard("running");
     g_armed = true;
+    GetSystemTimeAsFileTime(&g_armedAt);
+}
+
+// Whether the game wrote a crash dump (a folder in <game>\crash_dumps) since this session armed the guard.
+bool CrashDumpSinceArmed() {
+    wchar_t path[MAX_PATH]{};
+    GetModuleFileNameW(nullptr, path, MAX_PATH);
+    if (auto* slash = wcsrchr(path, L'\\')) slash[1] = 0;
+    const std::wstring pattern = std::wstring(path) + L"crash_dumps\\*";
+    WIN32_FIND_DATAW data{};
+    HANDLE find = FindFirstFileW(pattern.c_str(), &data);
+    if (find == INVALID_HANDLE_VALUE) return false;
+    bool newer = false;
+    do {
+        if (data.cFileName[0] == L'.') continue;
+        if (CompareFileTime(&data.ftCreationTime, &g_armedAt) >= 0 || CompareFileTime(&data.ftLastWriteTime, &g_armedAt) >= 0) newer = true;
+    } while (!newer && FindNextFileW(find, &data));
+    FindClose(find);
+    return newer;
 }
 }
 
@@ -192,6 +212,15 @@ bool Tripped() { return g_tripped; }
 
 void NoteStablePlay() {
     if (!g_armed) return;
+    g_armed = false;
+    WriteGuard("ok");
+}
+
+// The game is closing normally (ExitProcess): a short session that quit to the desktop is not a
+// crash, so it doesn't turn the cast off at the next start (user2046, 2.0.1). A crash that still
+// ends through ExitProcess leaves a dump in crash_dumps first, and then the guard stays "running".
+void NoteCleanExit() {
+    if (!g_armed || CrashDumpSinceArmed()) return;
     g_armed = false;
     WriteGuard("ok");
 }

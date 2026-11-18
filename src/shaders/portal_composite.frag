@@ -90,11 +90,16 @@ vec3 SnapshotColor(vec2 uv,float depth) {
     vec2 pos=uv*vec2(size)-0.5, f=fract(pos);
     ivec2 base=ivec2(floor(pos));
     vec3 rgb=vec3(0);float weight=0.0;
-    float tolerance=max(0.025,depth*0.01);
+    // A soft falloff, not a cut: on ground seen at a shallow angle neighbouring texels are
+    // further apart in depth than any fixed tolerance, every neighbour was refused, and the
+    // picture showed as single texels, in blocks several screen pixels wide (2026-11-17). An
+    // outline against something metres behind still gets next to nothing from the other side.
+    float tolerance=max(0.05,depth*0.02);
     for(int i=0;i<4;++i) {
         vec4 tap=texelFetch(sampler2D(destination,imageSampler),clamp(base+ivec2(i&1,i>>1),ivec2(0),size-1),0);
         float w=((i&1)==0?1.0-f.x:f.x)*(i<2?1.0-f.y:f.y);
-        w*=1.0-smoothstep(tolerance,2.0*tolerance,abs(tap.a-depth));
+        float off=abs(tap.a-depth)/tolerance;
+        w*=1.0/(1.0+off*off);
         rgb+=tap.rgb*w;weight+=w;
     }
     if(weight>1e-5)return rgb/weight;
