@@ -422,7 +422,7 @@ inline Rules Current(bool hostsWorld) {
 // own loader.log: which build the host runs and which switches are in force there. A new
 // message, as 2.0.2 clients reject a rules answer (/tps2) with more than their three bits.
 // A host of 2.0.2 or older never answers.
-inline constexpr char kModVersion[] = "2.0.3";
+inline constexpr char kModVersion[] = "2.0.4";
 inline constexpr std::string_view kInfoAsk = "/tph3";
 inline constexpr std::string_view kInfoPrefix = "/tps3 ";
 struct HostInfo { char version[16]{}; uint32_t bits = 7; };

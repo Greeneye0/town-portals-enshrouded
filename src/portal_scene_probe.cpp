@@ -1086,8 +1086,13 @@ void CreateOwnedViewBody(void* scene) {
     // - Bit 6 (DetailScattering in the game's log) is the grass and small ground plants; without
     //   it the far ground was bare.
     // The game's log names the set at each creation ("creating render scene ... initial features").
-    constexpr uint32_t features=0x0a3027ff; // GI dependencies; Water disabled with WaterBrickTree.
+    // Without WorldSdf (public bit 27): with it both views built a world distance field in the
+    // same frame and the GPU hung in WorldSdfCombineSdfInstancesPipeline ("Vulkan device lost"),
+    // 3 to 15 s into the live view at a busy base, eight times in a row (2026-11-22). Without it
+    // the far side looked fine and ran without a crash.
+    constexpr uint32_t features=0x0a3027ff&~0x08000000u; // GI dependencies; Water disabled with WaterBrickTree.
     static_assert(!(features & 0x10000));
+    static_assert(!(features & 0x08000000u));
     const uint32_t worldFeatures=At<uint32_t>(description,0x40);
     At<uint32_t>(description,0x40)=features|(farWater?0x00800000u:0u);
     if(liveQuality==2)At<uint32_t>(description,0x40)&=~0x00200000u; // GpuBvh: the bounced light
@@ -2959,6 +2964,12 @@ void SyncOwnedInstances() {
     // Every 15 ms: carried tools and weapons are static objects that move with their owner, and at ten times a second they trailed behind the copied character.
     if(!g_mirrors||!g_haveModelFocus||GetTickCount64()-g_mirrors->tick<15)return;
     g_mirrors->tick=GetTickCount64();
+    {   // Dev test (2026-11-22, GPU hangs in WorldSdfCombineSdfInstances): tools/mirrors.off
+        // makes no world-object copies in the far scene, near or remembered.
+        static uint64_t checked=0;static bool off=false;
+        if(g_mirrors->tick-checked>1000){checked=g_mirrors->tick;off=GetFileAttributesW(L"C:/Mods/Enshrouded/TownPortal/tools/mirrors.off")!=INVALID_FILE_ATTRIBUTES;}
+        if(off)return;
+    }
     auto* source=At<uint8_t*>(reinterpret_cast<void*>(g_world->scene),0x98);
     auto* owned=At<void*>(g_target->view,0x98);
     if(!g_sceneReady(owned))return;
@@ -4003,6 +4014,25 @@ void RenderOwnedOnce(void* context,void* input) {
         // Same descriptor convention as the engine's model-preview output.
         // Preserve the original self-relative render-input address.
         std::memcpy(mapped,input,sizeof(mapped));mapped[0]=g_ownedRenderTick==0;
+        {   // Diagnostic (2026-11-22, a whole-screen black of ~10 s when a second portal opened):
+            // each view's isReadyForRendering byte (view state +0x980, FUN_14012c3b0: cleared on
+            // a camera cut, set once finished flags 7, 8 and 9 are all in) logged as it changes.
+            static int farWas=-1,playerWas=-1;static uint64_t farAt=0,playerAt=0;
+            const uint64_t now=GetTickCount64();
+            auto* farState=g_target->view?At<uint8_t*>(g_target->view,0xa0):nullptr;
+            auto* playerState=static_cast<uint8_t*>(WorldState());
+            const int farReady=farState?int(At<uint8_t>(farState,0x980)):-1;
+            const int playerReady=playerState?int(At<uint8_t>(playerState,0x980)):-1;
+            if(farReady!=farWas||playerReady!=playerWas){
+                char line[220]{};
+                std::snprintf(line,sizeof(line),"Town Portal: ready to render: player's view %d (was %d, %.1f s), second camera %d (was %d, %.1f s); far flags 0x%x, cut asked %d",
+                              playerReady,playerWas,playerWas!=playerReady&&playerAt?double(now-playerAt)/1000.0:0.0,
+                              farReady,farWas,farWas!=farReady&&farAt?double(now-farAt)/1000.0:0.0,g_ownedRenderFlags,int(g_forceCameraCut));
+                greeneye::Host()->log(line);
+                if(playerReady!=playerWas){playerWas=playerReady;playerAt=now;}
+                if(farReady!=farWas){farWas=farReady;farAt=now;}
+            }
+        }
         // A diagnostic camera stays at its initial pose while the player moves.
         // Portal-selected rendering below still uses the transformed live pose.
         if(GetTickCount64()<g_displayProbeUntil){

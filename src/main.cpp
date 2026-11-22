@@ -1468,6 +1468,18 @@ void CheckLoginSnapshot(void* gameClient, uint8_t* uiClient, float px, float py,
             static_cast<unsigned long long>(actorStates),actorRead,actorReady);
         Log(line);
     }
+    {   // Away from the altar: known as soon as the altar data is in, before any settling.
+        portal::FixedPos early{};
+        float ex = 0, ey = 0, ez = 0;
+        if (FindPreferredSpawnAltar(uiClient, px, pz, early, ex, ey, ez)) {
+            const float fx = px - ex, fz = pz - ez;
+            if (fx * fx + fz * fz > 40.0f * 40.0f || std::fabs(py - ey) > 10.0f) {
+                finish();
+                Log("Town Portal: login snapshot skipped (not at the Flame Altar)");
+                return;
+            }
+        }
+    }
     g_login.waiting = "area loading";
     if (!terrainReady) return;
     g_login.waiting = actorReady ? "spawn effects settling" : "player spawning";
@@ -1479,8 +1491,14 @@ void CheckLoginSnapshot(void* gameClient, uint8_t* uiClient, float px, float py,
     g_login.waiting = "Flame Altar not found";
     if (!FindPreferredSpawnAltar(uiClient, px, pz, altarFixed, ax, ay, az)) return;
     float dx = px - ax, dz = pz - az, distance = std::sqrt(dx * dx + dz * dz);
-    g_login.waiting = "not at the Flame Altar";
-    if (distance > 40.0f || std::fabs(py - ay) > 10.0f) return;
+    // Logged in somewhere else (where the last session ended, a hall's altar...): no login
+    // snapshot, and the cover goes at once. Waiting here kept the screen dark for the whole
+    // 12 s limit at every login away from the altar (user, 2026-11-22).
+    if (distance > 40.0f || std::fabs(py - ay) > 10.0f) {
+        finish();
+        Log("Town Portal: login snapshot skipped (not at the Flame Altar)");
+        return;
+    }
     if (distance < 0.5f) { dx = 0; dz = 1; distance = 1; }
     BaseSpot spot{};
     if (!ChooseBaseSpot(ax, ay, az, dx / distance, dz / distance, 1e6f, 1e6f, portal::travel::LocalSteamAccount(), spot, false)) {
@@ -2585,7 +2603,7 @@ GREENEYE_MOD_START {
     portal::rules::AddPortalsKey(L"NoFun", portal::rules::kNoFunKey);
 
     if (serverSide) {
-        Log("Town Portals 2.0.3: server companion loaded");
+        Log("Town Portals 2.0.4: server companion loaded");
         return true;
     }
 
@@ -2651,7 +2669,7 @@ GREENEYE_MOD_START {
     portal::casting::Init(host);
     LogGraphicsAdapters();
 
-    Log("Town Portals 2.0.3: press T or LB+Y on a controller (OpenPortalKey in town-portal.ini) to open a portal to your Preferred Spawn Flame Altar");
+    Log("Town Portals 2.0.4: press T or LB+Y on a controller (OpenPortalKey in town-portal.ini) to open a portal to your Preferred Spawn Flame Altar");
     return true;
 }
 
